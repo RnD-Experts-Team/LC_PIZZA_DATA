@@ -45,6 +45,17 @@ class JetStreamConsumer
      */
     private array $consumerCache = [];
 
+    /**
+     * Unix timestamp of the last forced refresh/reconnect.
+     */
+    private int $lastRefreshAt = 0;
+
+    /**
+     * Refresh connection every 10 minutes to avoid stale idle pull consumers.
+     */
+    private const FORCE_REFRESH_SECONDS = 600;
+
+
     public function __construct(
         private readonly NatsClientFactory $factory,
         private readonly EventRouter $router,
@@ -64,24 +75,64 @@ class JetStreamConsumer
 
         // IMPORTANT: create ONE client and reuse it forever.
         $this->client = $this->factory->make();
-
+        $this->lastRefreshAt = time();
         while (true) {
             try {
+                if (!$this->isClientHealthy()) {
+                    Log::warning('NATS connection stale → reconnecting');
+
+                    $this->reconnect();
+                }
+
+                if ($this->shouldForceRefresh()) {
+                    $this->reconnect('periodic_forced_refresh');
+                }
                 foreach ($streams as $cfg) {
                     $this->consumeStream($cfg, $batch, $timeoutMs);
                 }
+
             } catch (Throwable $e) {
                 Log::error('JetStream consumer outer loop error', [
                     'error' => $e->getMessage(),
-                    'exception' => get_class($e),
                 ]);
+
+                $this->reconnect(); // 👈 IMPORTANT
                 usleep(self::ERROR_BACKOFF_MS * 1000);
             }
 
             usleep(max(1, $sleepMs) * 1000);
         }
     }
+    private function shouldForceRefresh(): bool
+    {
+        if ($this->lastRefreshAt === 0) {
+            return false;
+        }
 
+        return (time() - $this->lastRefreshAt) >= self::FORCE_REFRESH_SECONDS;
+    }
+
+    private function reconnect(string $reason = 'unknown'): void
+    {
+        Log::warning('Reconnecting JetStream consumer client', [
+            'reason' => $reason,
+        ]);
+
+        try {
+            if ($this->client && method_exists($this->client, 'disconnect')) {
+                $this->client->disconnect();
+            }
+        } catch (Throwable $e) {
+            Log::warning('NATS disconnect failed during reconnect', [
+                'reason' => $reason,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $this->client = $this->factory->make();
+        $this->consumerCache = [];
+        $this->lastRefreshAt = time();
+    }
     /**
      * @param array{name:string,durable:string,filter_subject:string} $cfg
      */
@@ -137,6 +188,17 @@ class JetStreamConsumer
         }
     }
 
+
+    private function isClientHealthy(): bool
+    {
+        try {
+            // lightweight ping
+            $this->client?->publish('_INBOX.healthcheck', 'ping');
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
     /**
      * Initializes and caches the JetStream consumer client-side object once.
      * NOTE: This does NOT create the consumer on the server; you already did via CLI.
