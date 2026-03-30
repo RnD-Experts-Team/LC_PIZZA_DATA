@@ -11,6 +11,7 @@ $dataSubject = $devMode
     : 'data.v1.>';
 
 return [
+    'dev_mode' => $devMode,
     'host' => env('NATS_HOST', '127.0.0.1'),
     'port' => (int) env('NATS_PORT', 4222),
 
