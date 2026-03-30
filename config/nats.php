@@ -1,5 +1,15 @@
 <?php
 
+$devMode = (int) env('DEV_MODE', 0) === 1;
+
+$authSubject = $devMode
+    ? 'auth.testing.v1.>'
+    : 'auth.v1.>';
+
+$dataSubject = $devMode
+    ? 'data.testing.v1.>'
+    : 'data.v1.>';
+
 return [
     'host' => env('NATS_HOST', '127.0.0.1'),
     'port' => (int) env('NATS_PORT', 4222),
@@ -8,10 +18,15 @@ return [
     'pass' => env('NATS_PASS'),
     'token' => env('NATS_TOKEN'),
 
-    'jetstream' => [
-        'enabled' => true,
-        'stream' => env('NATS_DATA_STREAM', 'DATA_EVENTS'),
-        'subjects' => ['data.v1.>'],
+
+
+    'publishers' => [
+        [
+            'name' => $devMode
+                ? env('NATS_DATA_STREAM', 'DATA_TESTING_EVENTS')
+                : env('NATS_DATA_STREAM', 'DATA_EVENTS'),
+            'subjects' => [$dataSubject],
+        ],
     ],
     /**
      * Add streams here as new projects appear.
@@ -19,9 +34,9 @@ return [
      */
     'streams' => [
         [
-            'name' => env('NATS_AUTH_STREAM', 'AUTH_EVENTS'),
-            'durable' => env('NATS_AUTH_DURABLE', 'DATA_AUTH_CONSUMER'),
-            'filter_subject' => 'auth.v1.>', // match your stream subjects
+            'name' => $devMode ? env('NATS_AUTH_STREAM', 'AUTH_TESTING_EVENTS') : env('NATS_AUTH_STREAM', 'AUTH_EVENTS'),
+            'durable' => $devMode ? env('NATS_AUTH_DURABLE', 'DATA_AUTH_TESTING_CONSUMER') : env('NATS_AUTH_DURABLE', 'DATA_AUTH_CONSUMER'),
+            'filter_subject' => $authSubject, // match your stream subjects
         ],
 
         // Example additional stream later:
