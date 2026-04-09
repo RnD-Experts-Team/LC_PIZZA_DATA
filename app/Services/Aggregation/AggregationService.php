@@ -158,7 +158,7 @@ class AggregationService
         $hours = $ordersSrc
             ->where('franchise_store', $store)
             ->where('business_date', $dateStr)
-            ->selectRaw('DISTINCT HOUR(date_time_placed) as hour')
+            ->selectRaw('DISTINCT HOUR(date_time_fulfilled) as hour')
             ->pluck('hour');
 
         foreach ($hours as $hour) {
@@ -461,7 +461,7 @@ class AggregationService
         $hours = $linesSrc
             ->where('franchise_store', $store)
             ->where('business_date', $dateStr)
-            ->selectRaw('DISTINCT HOUR(date_time_placed) as hour')
+            ->selectRaw('DISTINCT HOUR(date_time_fulfilled) as hour')
             ->pluck('hour');
 
         foreach ($hours as $hour) {
