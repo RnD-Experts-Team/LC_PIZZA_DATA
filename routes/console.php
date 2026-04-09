@@ -13,108 +13,199 @@ use Illuminate\Support\Facades\Schedule;
  */
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// IMPORT SCHEDULES
+// DATE HELPERS
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-// Primary import - yesterday's data at 9:20 AM ET
-Schedule::command('import:daily-data --yesterday')
+$yesterday = now()->subDay()->toDateString();
+$twoDaysAgo = now()->subDays(2)->toDateString();
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// IMPORTS (BACKFILL - 3 PASSES)
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────
+// DAY D+1 → TWO PASSES (yesterday)
+// ─────────────────────────────
+
+// 9:20 AM ET
+Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
     ->dailyAt('09:20')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/import-daily-data.log'))
-    ->name('import-primary')
-    ->onSuccess(function () {
-        \Illuminate\Support\Facades\Log::info('Primary import completed successfully');
-    })
-    ->onFailure(function () {
-        \Illuminate\Support\Facades\Log::error('Primary import failed');
-        // TODO: Send alert email/Slack notification
-    });
+    ->appendOutputTo(storage_path('logs/import-backfill-morning.log'))
+    ->name('import-backfill-morning');
 
-// Secondary import - catch late updates at 10:20 AM ET
-Schedule::command('import:daily-data --yesterday')
-    ->dailyAt('10:20')
+// 1:00 PM ET
+Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
+    ->dailyAt('13:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/import-daily-data-secondary.log'))
-    ->name('import-secondary');
+    ->appendOutputTo(storage_path('logs/import-backfill-afternoon.log'))
+    ->name('import-backfill-afternoon');
+
+
+// ─────────────────────────────
+// DAY D+2 → FINAL PASS (2 days ago)
+// ─────────────────────────────
+
+Schedule::command("import:backfill --start={$twoDaysAgo} --end={$twoDaysAgo}")
+    ->dailyAt('09:00') // MUST run before aggregations
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->appendOutputTo(storage_path('logs/import-backfill-final.log'))
+    ->name('import-backfill-final');
+
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// AGGREGATION SCHEDULES
+// AGGREGATIONS (REBUILD - AFTER FINAL IMPORT)
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-// Update hourly aggregations after imports (10:30 AM ET) - BUILDS FROM RAW DATA
-Schedule::command('aggregation:update --type=hourly')
+$aggStart = now()->subDays(2)->toDateString();
+$aggEnd = now()->subDay()->toDateString();
+
+
+// ─────────────────────────────
+// MORNING AGGREGATIONS
+// ─────────────────────────────
+
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --type=hourly")
     ->dailyAt('10:30')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
     ->appendOutputTo(storage_path('logs/aggregation-hourly.log'))
-    ->name('aggregation-hourly')
-    ->onSuccess(function () {
-        \Illuminate\Support\Facades\Log::info('Hourly aggregation completed successfully');
-    })
-    ->onFailure(function () {
-        \Illuminate\Support\Facades\Log::error('Hourly aggregation failed');
-        // TODO: Send alert
-    });
+    ->name('aggregation-hourly-morning');
 
-// Update daily aggregations after hourly (10:45 AM ET) - BUILDS FROM HOURLY
-Schedule::command('aggregation:update --type=daily')
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --type=daily")
     ->dailyAt('10:45')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
     ->appendOutputTo(storage_path('logs/aggregation-daily.log'))
-    ->name('aggregation-daily')
-    ->onSuccess(function () {
-        \Illuminate\Support\Facades\Log::info('Daily aggregation completed successfully');
-    })
-    ->onFailure(function () {
-        \Illuminate\Support\Facades\Log::error('Daily aggregation failed');
-        // TODO: Send alert
-    });
+    ->name('aggregation-daily-morning');
 
-// Update weekly aggregations every Tuesday at 3:00 AM ET - BUILDS FROM DAILY
-Schedule::command('aggregation:update --type=weekly')
-    ->weekly()
+
+// ─────────────────────────────
+// AFTERNOON AGGREGATIONS (SECOND PASS)
+// ─────────────────────────────
+
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --type=hourly")
+    ->dailyAt('13:30')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->appendOutputTo(storage_path('logs/aggregation-hourly-afternoon.log'))
+    ->name('aggregation-hourly-afternoon');
+
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --type=daily")
+    ->dailyAt('13:45')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->appendOutputTo(storage_path('logs/aggregation-daily-afternoon.log'))
+    ->name('aggregation-daily-afternoon');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// WEEKLY (REBUILD - RUN + NEXT DAY)
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+$weeklyStart = now()->subWeeks(2)->startOfWeek()->toDateString();
+$weeklyEnd = now()->subWeek()->endOfWeek()->toDateString();
+
+// Tuesday
+Schedule::command("aggregation:rebuild --start={$weeklyStart} --end={$weeklyEnd} --type=weekly")
     ->tuesdays()
     ->at('03:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/aggregation-weekly.log'))
-    ->name('aggregation-weekly');
+    ->name('aggregation-weekly-primary');
 
-// Update monthly aggregations on 1st of month at 4:00 AM ET - BUILDS FROM WEEKLY
-Schedule::command('aggregation:update --type=monthly')
+// Wednesday (repeat)
+Schedule::command("aggregation:rebuild --start={$weeklyStart} --end={$weeklyEnd} --type=weekly")
+    ->wednesdays()
+    ->at('03:00')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('aggregation-weekly-secondary');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// MONTHLY (REBUILD - 1st + 2nd)
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+$monthlyStart = now()->subMonths(2)->startOfMonth()->toDateString();
+$monthlyEnd = now()->subMonth()->endOfMonth()->toDateString();
+
+Schedule::command("aggregation:rebuild --start={$monthlyStart} --end={$monthlyEnd} --type=monthly")
     ->monthlyOn(1, '04:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/aggregation-monthly.log'))
-    ->name('aggregation-monthly');
+    ->name('aggregation-monthly-primary');
 
-// Update quarterly aggregations on 1st day of quarter at 4:30 AM ET - BUILDS FROM MONTHLY
-Schedule::command('aggregation:update --type=quarterly')
+Schedule::command("aggregation:rebuild --start={$monthlyStart} --end={$monthlyEnd} --type=monthly")
+    ->monthlyOn(2, '04:00')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('aggregation-monthly-secondary');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// QUARTERLY (REBUILD - 1st DAY + NEXT DAY)
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+$quarterStart = now()->subQuarters(2)->startOfQuarter()->toDateString();
+$quarterEnd = now()->subQuarter()->endOfQuarter()->toDateString();
+
+// First day
+Schedule::command("aggregation:rebuild --start={$quarterStart} --end={$quarterEnd} --type=quarterly")
     ->quarterly()
     ->at('04:30')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/aggregation-quarterly.log'))
-    ->name('aggregation-quarterly');
+    ->name('aggregation-quarterly-primary');
 
-// Update yearly aggregations on January 1st at 5:00 AM ET - BUILDS FROM QUARTERLY
-Schedule::command('aggregation:update --type=yearly')
+// Second day
+Schedule::command("aggregation:rebuild --start={$quarterStart} --end={$quarterEnd} --type=quarterly")
+    ->dailyAt('04:30')
+    ->timezone('America/New_York')
+    ->when(fn() => now()->isSameDay(now()->copy()->firstOfQuarter()->addDay()))
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('aggregation-quarterly-secondary');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// YEARLY (REBUILD - JAN 1 + JAN 2)
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+$yearlyStart = now()->subYears(2)->startOfYear()->toDateString();
+$yearlyEnd = now()->subYear()->endOfYear()->toDateString();
+
+// Jan 1
+Schedule::command("aggregation:rebuild --start={$yearlyStart} --end={$yearlyEnd} --type=yearly")
     ->yearlyOn(1, 1, '05:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/aggregation-yearly.log'))
-    ->name('aggregation-yearly');
+    ->name('aggregation-yearly-primary');
+
+// Jan 2
+Schedule::command("aggregation:rebuild --start={$yearlyStart} --end={$yearlyEnd} --type=yearly")
+    ->yearlyOn(1, 2, '05:00')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('aggregation-yearly-secondary');
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // PARTITION SCHEDULES
