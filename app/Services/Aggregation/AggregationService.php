@@ -42,6 +42,25 @@ class AggregationService
         return DB::query()->fromSub($union, 'src');
     }
 
+    private function replaceRow(string $modelClass, array $key, array $data): void
+    {
+        DB::transaction(function () use ($modelClass, $key, $data) {
+            $modelClass::where($key)->delete();
+            $modelClass::create($data);
+        });
+    }
+
+    private function replaceRowsForGroup(string $modelClass, array $scopeKey, array $rows): void
+    {
+        DB::transaction(function () use ($modelClass, $scopeKey, $rows) {
+            $modelClass::where($scopeKey)->delete();
+
+            if (!empty($rows)) {
+                $modelClass::insert($rows);
+            }
+        });
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // PUBLIC ENTRY POINTS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -438,14 +457,11 @@ class AggregationService
             'hnr_broken_promises' => $hnrBrokenPromises,
         ];
 
-        HourlyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'business_date' => $date,
-                'hour' => $hour,
-            ],
-            $data
-        );
+        $this->replaceRow(HourlyStoreSummary::class, [
+            'franchise_store' => $store,
+            'business_date' => $date,
+            'hour' => $hour,
+        ], $data);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -537,15 +553,12 @@ class AggregationService
                 'refunded_quantity' => (float) $group->where('refunded', 'Yes')->sum('quantity'),
             ];
 
-            HourlyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $first->franchise_store,
-                    'business_date' => $first->business_date,
-                    'hour' => $hour,
-                    'item_id' => $first->item_id,
-                ],
-                $data
-            );
+            $this->replaceRow(HourlyItemSummary::class, [
+                'franchise_store' => $first->franchise_store,
+                'business_date' => $first->business_date,
+                'hour' => $hour,
+                'item_id' => $first->item_id,
+            ], $data);
         }
     }
 
@@ -604,13 +617,10 @@ class AggregationService
         $summary['store_tips'] = round($inStoreTips, 2);
         $summary['delivery_tips'] = round($deliveryTips, 2);
         $summary['total_tips'] = round($deliveryTips + $inStoreTips, 2);
-        DailyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'business_date' => $dateStr,
-            ],
-            $summary
-        );
+        $this->replaceRow(DailyStoreSummary::class, [
+            'franchise_store' => $store,
+            'business_date' => $dateStr,
+        ], $summary);
     }
 
     private function aggregateDailyItemsFromHourly(string $store, Carbon $date): void
@@ -636,25 +646,25 @@ class AggregationService
             ->get();
 
         foreach ($items as $item) {
-            DailyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $store,
-                    'business_date' => $dateStr,
-                    'item_id' => $item->item_id,
-                ],
-                [
-                    'menu_item_name' => $item->menu_item_name,
-                    'menu_item_account' => $item->menu_item_account,
-                    'quantity_sold' => $item->quantity_sold,
-                    'gross_sales' => round($item->gross_sales, 2),
-                    'net_sales' => round($item->net_sales, 2),
-                    'avg_item_price' => round($item->avg_item_price, 2),
-                    'delivery_quantity' => $item->delivery_quantity,
-                    'carryout_quantity' => $item->carryout_quantity,
-                    'modified_quantity' => $item->modified_quantity,
-                    'refunded_quantity' => $item->refunded_quantity,
-                ]
-            );
+            $this->replaceRow(DailyItemSummary::class, [
+                'franchise_store' => $store,
+                'business_date' => $dateStr,
+                'item_id' => $item->item_id,
+            ], [
+                'franchise_store' => $store,
+                'business_date' => $dateStr,
+                'item_id' => $item->item_id,
+                'menu_item_name' => $item->menu_item_name,
+                'menu_item_account' => $item->menu_item_account,
+                'quantity_sold' => $item->quantity_sold,
+                'gross_sales' => round($item->gross_sales, 2),
+                'net_sales' => round($item->net_sales, 2),
+                'avg_item_price' => round($item->avg_item_price, 2),
+                'delivery_quantity' => $item->delivery_quantity,
+                'carryout_quantity' => $item->carryout_quantity,
+                'modified_quantity' => $item->modified_quantity,
+                'refunded_quantity' => $item->refunded_quantity,
+            ]);
         }
     }
 
@@ -725,14 +735,11 @@ class AggregationService
                 : 0;
         }
 
-        WeeklyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'week_num' => $week,
-            ],
-            $summary
-        );
+        $this->replaceRow(WeeklyStoreSummary::class, [
+            'franchise_store' => $store,
+            'year_num' => $year,
+            'week_num' => $week,
+        ], $summary);
     }
 
     private function aggregateWeeklyItems(string $store, int $year, int $week): void
@@ -758,27 +765,28 @@ class AggregationService
             ->get();
 
         foreach ($items as $item) {
-            WeeklyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $store,
-                    'year_num' => $year,
-                    'week_num' => $week,
-                    'item_id' => $item->item_id,
-                ],
-                [
-                    'menu_item_name' => $item->menu_item_name,
-                    'menu_item_account' => $item->menu_item_account,
-                    'quantity_sold' => $item->quantity_sold,
-                    'gross_sales' => round($item->gross_sales, 2),
-                    'net_sales' => round($item->net_sales, 2),
-                    'avg_item_price' => round($item->avg_item_price, 2),
-                    'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                    'delivery_quantity' => $item->delivery_quantity,
-                    'carryout_quantity' => $item->carryout_quantity,
-                    'week_start_date' => $weekStart->toDateString(),
-                    'week_end_date' => $weekEnd->toDateString(),
-                ]
-            );
+            $this->replaceRow(WeeklyItemSummary::class, [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'week_num' => $week,
+                'item_id' => $item->item_id,
+            ], [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'week_num' => $week,
+                'item_id' => $item->item_id,
+                'menu_item_name' => $item->menu_item_name,
+                'menu_item_account' => $item->menu_item_account,
+                'quantity_sold' => $item->quantity_sold,
+                'gross_sales' => round($item->gross_sales, 2),
+                'net_sales' => round($item->net_sales, 2),
+                'avg_item_price' => round($item->avg_item_price, 2),
+                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
+                'delivery_quantity' => $item->delivery_quantity,
+                'carryout_quantity' => $item->carryout_quantity,
+                'week_start_date' => $weekStart->toDateString(),
+                'week_end_date' => $weekEnd->toDateString(),
+            ]);
         }
     }
 
@@ -861,14 +869,11 @@ class AggregationService
                 : 0;
         }
 
-        MonthlyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'month_num' => $month,
-            ],
-            $summary
-        );
+        $this->replaceRow(MonthlyStoreSummary::class, [
+            'franchise_store' => $store,
+            'year_num' => $year,
+            'month_num' => $month,
+        ], $summary);
     }
 
     private function aggregateMonthlyItems(string $store, int $year, int $month): void
@@ -898,25 +903,26 @@ class AggregationService
             ->get();
 
         foreach ($items as $item) {
-            MonthlyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $store,
-                    'year_num' => $year,
-                    'month_num' => $month,
-                    'item_id' => $item->item_id,
-                ],
-                [
-                    'menu_item_name' => $item->menu_item_name,
-                    'menu_item_account' => $item->menu_item_account,
-                    'quantity_sold' => $item->quantity_sold,
-                    'gross_sales' => round($item->gross_sales, 2),
-                    'net_sales' => round($item->net_sales, 2),
-                    'avg_item_price' => round($item->avg_item_price, 2),
-                    'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                    'delivery_quantity' => $item->delivery_quantity,
-                    'carryout_quantity' => $item->carryout_quantity,
-                ]
-            );
+            $this->replaceRow(MonthlyItemSummary::class, [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'month_num' => $month,
+                'item_id' => $item->item_id,
+            ], [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'month_num' => $month,
+                'item_id' => $item->item_id,
+                'menu_item_name' => $item->menu_item_name,
+                'menu_item_account' => $item->menu_item_account,
+                'quantity_sold' => $item->quantity_sold,
+                'gross_sales' => round($item->gross_sales, 2),
+                'net_sales' => round($item->net_sales, 2),
+                'avg_item_price' => round($item->avg_item_price, 2),
+                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
+                'delivery_quantity' => $item->delivery_quantity,
+                'carryout_quantity' => $item->carryout_quantity,
+            ]);
         }
     }
 
@@ -993,14 +999,11 @@ class AggregationService
                 : 0;
         }
 
-        QuarterlyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'quarter_num' => $quarter,
-            ],
-            $summary
-        );
+        $this->replaceRow(QuarterlyStoreSummary::class, [
+            'franchise_store' => $store,
+            'year_num' => $year,
+            'quarter_num' => $quarter,
+        ], $summary);
     }
 
     private function aggregateQuarterlyItems(string $store, int $year, int $quarter): void
@@ -1030,27 +1033,28 @@ class AggregationService
             ->get();
 
         foreach ($items as $item) {
-            QuarterlyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $store,
-                    'year_num' => $year,
-                    'quarter_num' => $quarter,
-                    'item_id' => $item->item_id,
-                ],
-                [
-                    'menu_item_name' => $item->menu_item_name,
-                    'menu_item_account' => $item->menu_item_account,
-                    'quantity_sold' => $item->quantity_sold,
-                    'gross_sales' => round($item->gross_sales, 2),
-                    'net_sales' => round($item->net_sales, 2),
-                    'avg_item_price' => round($item->avg_item_price, 2),
-                    'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                    'delivery_quantity' => $item->delivery_quantity,
-                    'carryout_quantity' => $item->carryout_quantity,
-                    'quarter_start_date' => $qStart->toDateString(),
-                    'quarter_end_date' => $qEnd->toDateString(),
-                ]
-            );
+            $this->replaceRow(QuarterlyItemSummary::class, [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'quarter_num' => $quarter,
+                'item_id' => $item->item_id,
+            ], [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'quarter_num' => $quarter,
+                'item_id' => $item->item_id,
+                'menu_item_name' => $item->menu_item_name,
+                'menu_item_account' => $item->menu_item_account,
+                'quantity_sold' => $item->quantity_sold,
+                'gross_sales' => round($item->gross_sales, 2),
+                'net_sales' => round($item->net_sales, 2),
+                'avg_item_price' => round($item->avg_item_price, 2),
+                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
+                'delivery_quantity' => $item->delivery_quantity,
+                'carryout_quantity' => $item->carryout_quantity,
+                'quarter_start_date' => $qStart->toDateString(),
+                'quarter_end_date' => $qEnd->toDateString(),
+            ]);
         }
     }
 
@@ -1099,13 +1103,10 @@ class AggregationService
                 : 0;
         }
 
-        YearlyStoreSummary::updateOrCreate(
-            [
-                'franchise_store' => $store,
-                'year_num' => $year,
-            ],
-            $summary
-        );
+        $this->replaceRow(YearlyStoreSummary::class, [
+            'franchise_store' => $store,
+            'year_num' => $year,
+        ], $summary);
     }
 
     private function aggregateYearlyItems(string $store, int $year): void
@@ -1128,24 +1129,24 @@ class AggregationService
             ->get();
 
         foreach ($items as $item) {
-            YearlyItemSummary::updateOrCreate(
-                [
-                    'franchise_store' => $store,
-                    'year_num' => $year,
-                    'item_id' => $item->item_id,
-                ],
-                [
-                    'menu_item_name' => $item->menu_item_name,
-                    'menu_item_account' => $item->menu_item_account,
-                    'quantity_sold' => $item->quantity_sold,
-                    'gross_sales' => round($item->gross_sales, 2),
-                    'net_sales' => round($item->net_sales, 2),
-                    'avg_item_price' => round($item->avg_item_price, 2),
-                    'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                    'delivery_quantity' => $item->delivery_quantity,
-                    'carryout_quantity' => $item->carryout_quantity,
-                ]
-            );
+            $this->replaceRow(YearlyItemSummary::class, [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'item_id' => $item->item_id,
+            ], [
+                'franchise_store' => $store,
+                'year_num' => $year,
+                'item_id' => $item->item_id,
+                'menu_item_name' => $item->menu_item_name,
+                'menu_item_account' => $item->menu_item_account,
+                'quantity_sold' => $item->quantity_sold,
+                'gross_sales' => round($item->gross_sales, 2),
+                'net_sales' => round($item->net_sales, 2),
+                'avg_item_price' => round($item->avg_item_price, 2),
+                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
+                'delivery_quantity' => $item->delivery_quantity,
+                'carryout_quantity' => $item->carryout_quantity,
+            ]);
         }
     }
 
