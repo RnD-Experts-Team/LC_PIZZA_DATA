@@ -128,7 +128,7 @@ class ValidateDataCommand extends Command
         $aggregatedSales = DB::connection('aggregation')
             ->table('daily_store_summary')
             ->where('business_date', $date->toDateString())
-            ->sum('total_sales');
+            ->sum('royalty_obligation');
 
         $difference = abs($sourceSales - $aggregatedSales);
 
@@ -176,8 +176,8 @@ class ValidateDataCommand extends Command
         $tables = ['detail_orders_hot', 'detail_orders_archive', 'daily_store_summary'];
 
         foreach ($tables as $table) {
-            $connection = str_contains($table, 'summary') ? 'aggregation' : 
-                         (str_contains($table, '_hot') ? 'operational' : 'aggregation');
+            $connection = str_contains($table, 'summary') ? 'aggregation' :
+                (str_contains($table, '_hot') ? 'operational' : 'aggregation');
 
             if (!$this->tableExists($connection, $table)) {
                 $this->issues[] = "Missing table: {$table}";
@@ -203,10 +203,10 @@ class ValidateDataCommand extends Command
     {
         $orphaned = DB::connection('operational')
             ->table('order_line_hot as ol')
-            ->leftJoin('detail_orders_hot as do', function($join) {
+            ->leftJoin('detail_orders_hot as do', function ($join) {
                 $join->on('ol.franchise_store', '=', 'do.franchise_store')
-                     ->on('ol.business_date', '=', 'do.business_date')
-                     ->on('ol.order_id', '=', 'do.order_id');
+                    ->on('ol.business_date', '=', 'do.business_date')
+                    ->on('ol.order_id', '=', 'do.order_id');
             })
             ->whereNull('do.order_id')
             ->count();

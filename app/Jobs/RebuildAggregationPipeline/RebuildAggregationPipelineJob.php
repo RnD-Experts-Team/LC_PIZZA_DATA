@@ -40,12 +40,13 @@ class RebuildAggregationPipelineJob implements ShouldQueue
         public string $type = 'all',
         public ?array $stages = null,
         public int $stageIndex = 0
-    ) {}
+    ) {
+    }
 
     public function handle(): void
     {
         $start = Carbon::parse($this->startDate)->startOfDay();
-        $end   = Carbon::parse($this->endDate)->startOfDay();
+        $end = Carbon::parse($this->endDate)->startOfDay();
 
         // Build stages only on the first run
         $stages = $this->stages ?? $this->stagesForType($this->type);
@@ -70,13 +71,13 @@ class RebuildAggregationPipelineJob implements ShouldQueue
 
         // Build jobs for this stage
         $jobs = match ($stage) {
-            'hourly'    => $this->makeHourlyJobs($this->rebuildId, $start, $end),
-            'daily'     => $this->makeDailyJobs($this->rebuildId, $start, $end),
-            'weekly'    => $this->makeWeeklyJobs($this->rebuildId, $start, $end),
-            'monthly'   => $this->makeMonthlyJobs($this->rebuildId, $start, $end),
+            'hourly' => $this->makeHourlyJobs($this->rebuildId, $start, $end),
+            'daily' => $this->makeDailyJobs($this->rebuildId, $start, $end),
+            'weekly' => $this->makeWeeklyJobs($this->rebuildId, $start, $end),
+            'monthly' => $this->makeMonthlyJobs($this->rebuildId, $start, $end),
             'quarterly' => $this->makeQuarterlyJobs($this->rebuildId, $start, $end),
-            'yearly'    => $this->makeYearlyJobs($this->rebuildId, $start, $end),
-            default     => [],
+            'yearly' => $this->makeYearlyJobs($this->rebuildId, $start, $end),
+            default => [],
         };
 
         // Nothing to do in this stage -> continue
@@ -104,45 +105,38 @@ class RebuildAggregationPipelineJob implements ShouldQueue
 
         // IMPORTANT: prepare all values for closures WITHOUT capturing $this
         $rebuildId = $this->rebuildId;
-        $startStr  = $start->toDateString();
-        $endStr    = $end->toDateString();
-        $type      = $this->type;
+        $startStr = $start->toDateString();
+        $endStr = $end->toDateString();
+        $type = $this->type;
         $nextIndex = $this->stageIndex + 1;
 
         Bus::batch($jobs)
             ->name("agg_rebuild:{$rebuildId}:{$stage}")
             ->allowFailures()
-            ->then(static function (Batch $batch) use ($rebuildId, $startStr, $endStr, $type, $stages, $nextIndex, $stage) {
-                // Never use $this in here (closure is static)
+            ->then(static function (Batch $batch) use ($rebuildId, $stage) {
+                // Runs only when every job in this stage succeeds.
                 Cache::put("agg_rebuild_progress_{$rebuildId}", array_merge(
                     Cache::get("agg_rebuild_progress_{$rebuildId}", []),
                     [
                         'status' => 'processing',
                         'last_stage_completed' => $stage,
+                        'last_stage_result' => 'completed',
                         'last_batch_id' => $batch->id,
                         'last_failed_jobs' => $batch->failedJobs,
                         'updated_at' => now()->toISOString(),
                     ]
                 ), 7200);
-
-
-                ContinueAggregationPipelineJob::dispatch(
-                    rebuildId: $rebuildId,
-                    startDate: $startStr,
-                    endDate: $endStr,
-                    type: $type,
-                    stages: $stages,
-                    nextIndex: $nextIndex
-                );
             })
             ->catch(static function (Batch $batch, Throwable $e) use ($rebuildId, $stage) {
+                // With allowFailures enabled, catch may run if any job fails.
+                // Do not stop the pipeline here; finally() will continue to next stage.
                 Cache::put("agg_rebuild_progress_{$rebuildId}", array_merge(
                     Cache::get("agg_rebuild_progress_{$rebuildId}", []),
                     [
-                        'status' => 'failed',
+                        'status' => 'processing',
                         'current_stage' => $stage,
-                        'error' => $e->getMessage(),
-                        'failed_at' => now()->toISOString(),
+                        'last_stage_result' => 'completed_with_failures',
+                        'last_stage_error' => $e->getMessage(),
                         'updated_at' => now()->toISOString(),
                     ]
                 ), 7200);
@@ -153,6 +147,29 @@ class RebuildAggregationPipelineJob implements ShouldQueue
                     'batch_id' => $batch->id ?? null,
                     'error' => $e->getMessage(),
                 ]);
+            })
+            ->finally(static function (Batch $batch) use ($rebuildId, $startStr, $endStr, $type, $stages, $nextIndex, $stage) {
+                // Continue the pipeline once this stage has finished, even with failures.
+                Cache::put("agg_rebuild_progress_{$rebuildId}", array_merge(
+                    Cache::get("agg_rebuild_progress_{$rebuildId}", []),
+                    [
+                        'status' => 'processing',
+                        'last_stage_completed' => $stage,
+                        'last_stage_result' => $batch->failedJobs > 0 ? 'completed_with_failures' : 'completed',
+                        'last_batch_id' => $batch->id,
+                        'last_failed_jobs' => $batch->failedJobs,
+                        'updated_at' => now()->toISOString(),
+                    ]
+                ), 7200);
+
+                ContinueAggregationPipelineJob::dispatch(
+                    rebuildId: $rebuildId,
+                    startDate: $startStr,
+                    endDate: $endStr,
+                    type: $type,
+                    stages: $stages,
+                    nextIndex: $nextIndex
+                );
             })
             ->dispatch();
     }
@@ -165,14 +182,14 @@ class RebuildAggregationPipelineJob implements ShouldQueue
     {
         // "type" means "run up to this level", respecting dependencies
         return match ($type) {
-            'hourly'    => ['hourly'],
-            'daily'     => ['hourly', 'daily'],
-            'weekly'    => ['hourly', 'daily', 'weekly'],
-            'monthly'   => ['hourly', 'daily', 'weekly', 'monthly'],
+            'hourly' => ['hourly'],
+            'daily' => ['hourly', 'daily'],
+            'weekly' => ['hourly', 'daily', 'weekly'],
+            'monthly' => ['hourly', 'daily', 'weekly', 'monthly'],
             'quarterly' => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly'],
-            'yearly'    => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
-            'all'       => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
-            default     => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
+            'yearly' => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
+            'all' => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
+            default => ['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
         };
     }
 
@@ -214,7 +231,7 @@ class RebuildAggregationPipelineJob implements ShouldQueue
     {
         $jobs = [];
         $cursor = $start->copy()->startOfMonth();
-        $last   = $end->copy()->startOfMonth();
+        $last = $end->copy()->startOfMonth();
 
         while ($cursor <= $last) {
             $jobs[] = new RebuildMonthlyJob($rebuildId, (int) $cursor->year, (int) $cursor->month);
@@ -228,7 +245,7 @@ class RebuildAggregationPipelineJob implements ShouldQueue
     {
         $jobs = [];
         $cursor = $start->copy()->startOfQuarter();
-        $last   = $end->copy()->startOfQuarter();
+        $last = $end->copy()->startOfQuarter();
 
         while ($cursor <= $last) {
             $q = (int) ceil($cursor->month / 3);
