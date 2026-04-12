@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands\Import;
 
-use App\Jobs\ProcessAggregationJob;
 use App\Jobs\ProcessCsvImportJob;
+use App\Jobs\RunAggregationRebuildJob;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -100,7 +100,7 @@ class ImportFromOldSystemCommand extends Command
 
         // Load old system configuration
         $this->oldSystemBaseUrl = config('services.old_api.base_url', 'http://localhost');
-        $this->oldSystemApiKey  = config('services.old_api.api_key', 'null_thing');
+        $this->oldSystemApiKey = config('services.old_api.api_key', 'null_thing');
     }
 
     public function handle(): int
@@ -116,7 +116,7 @@ class ImportFromOldSystemCommand extends Command
 
         try {
             $startDate = Carbon::parse($this->option('start'));
-            $endDate   = Carbon::parse($this->option('end'));
+            $endDate = Carbon::parse($this->option('end'));
         } catch (\Exception $e) {
             $this->error('Invalid date format. Use Y-m-d (e.g., 2025-01-01)');
             return self::FAILURE;
@@ -127,12 +127,12 @@ class ImportFromOldSystemCommand extends Command
             return self::FAILURE;
         }
 
-        $batchDays       = (int) $this->option('batch-days');
-        $delay           = (int) $this->option('delay');
+        $batchDays = (int) $this->option('batch-days');
+        $delay = (int) $this->option('delay');
         $skipAggregation = $this->option('no-aggregation');
         $aggregationType = $this->option('aggregation-type');
 
-        $totalDays    = $startDate->diffInDays($endDate) + 1;
+        $totalDays = $startDate->diffInDays($endDate) + 1;
         $totalBatches = (int) ceil($totalDays / max($batchDays, 1));
 
         $this->info("📅 Date Range: {$startDate->toDateString()} to {$endDate->toDateString()}");
@@ -159,8 +159,8 @@ class ImportFromOldSystemCommand extends Command
         $this->newLine();
 
         $successful = 0;
-        $failed     = 0;
-        $totalJobs  = 0;
+        $failed = 0;
+        $totalJobs = 0;
 
         $progressBar = $this->output->createProgressBar($totalBatches);
         $progressBar->start();
@@ -192,8 +192,8 @@ class ImportFromOldSystemCommand extends Command
                 $failed++;
                 $this->error("  ✗ Batch failed: " . $e->getMessage());
                 Log::error("Import batch failed", [
-                    'start'     => $currentDate->toDateString(),
-                    'end'       => $batchEnd->toDateString(),
+                    'start' => $currentDate->toDateString(),
+                    'end' => $batchEnd->toDateString(),
                     'exception' => $e->getMessage()
                 ]);
             }
@@ -229,7 +229,7 @@ class ImportFromOldSystemCommand extends Command
                 $this->warn('  ⚠️  Failed to queue aggregation: ' . $e->getMessage());
                 Log::error('Failed to dispatch aggregation job', [
                     'start' => $startDate->toDateString(),
-                    'end'   => $endDate->toDateString(),
+                    'end' => $endDate->toDateString(),
                     'error' => $e->getMessage()
                 ]);
             }
@@ -430,7 +430,7 @@ class ImportFromOldSystemCommand extends Command
         ], 7200); // 2 hours TTL
 
         // Dispatch the aggregation job
-        ProcessAggregationJob::dispatch(
+        RunAggregationRebuildJob::dispatch(
             $aggregationId,
             $startDate,
             $endDate,
@@ -514,9 +514,9 @@ class ImportFromOldSystemCommand extends Command
      */
     protected function withDateSuffix(string $relativePath, string $dateStr): string
     {
-        $dir  = dirname($relativePath);
+        $dir = dirname($relativePath);
         $base = pathinfo($relativePath, PATHINFO_FILENAME);
-        $ext  = pathinfo($relativePath, PATHINFO_EXTENSION);
+        $ext = pathinfo($relativePath, PATHINFO_EXTENSION);
 
         $dated = "{$base}_{$dateStr}.{$ext}";
 

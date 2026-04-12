@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessCsvImportJob;
-use App\Jobs\ProcessAggregationJob;
+use App\Jobs\RunAggregationRebuildJob;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -305,11 +305,14 @@ class ManualCsvImportController extends Controller
         $validator = Validator::make($request->all(), [
             'start_date' => 'required|date',
             'end_date' => 'required|date|after_or_equal:start_date',
-            'type' => 'required|in:hourly,daily,weekly,monthly,quarterly,yearly,all'
+            'type' => 'required|in:hourly,daily,weekly,monthly,quarterly,yearly,all',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+            return response()->json([
+                'success' => false,
+                'message' => $validator->errors()->first(),
+            ], 422);
         }
 
         try {
@@ -317,32 +320,46 @@ class ManualCsvImportController extends Controller
 
             Cache::put("agg_progress_{$aggregationId}", [
                 'status' => 'queued',
+                'aggregation_id' => $aggregationId,
+                'type' => $request->input('type'),
                 'processed' => 0,
                 'total' => 0,
-                'started_at' => now()->toISOString()
-            ], 3600);
+                'successful' => 0,
+                'failed' => 0,
+                'started_at' => now()->toISOString(),
+                'updated_at' => now()->toISOString(),
+                'current_unit' => null,
+                'failed_units' => [],
+            ], 60 * 60 * 24);
 
-            ProcessAggregationJob::dispatch(
+            RunAggregationRebuildJob::dispatch(
                 $aggregationId,
                 $request->input('start_date'),
                 $request->input('end_date'),
                 $request->input('type')
             );
 
-            return response()->json(['success' => true, 'aggregation_id' => $aggregationId]);
-        } catch (\Exception $e) {
-            Log::error("reaggregate failed", [
+            return response()->json([
+                'success' => true,
+                'aggregation_id' => $aggregationId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('reaggregate failed', [
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
 
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
         }
     }
 
     public function aggregationProgress(string $aggregationId)
     {
         $progress = Cache::get("agg_progress_{$aggregationId}");
+
         return $progress
             ? response()->json(['success' => true, 'progress' => $progress])
             : response()->json(['success' => false, 'message' => 'Not found'], 404);
@@ -366,7 +383,8 @@ class ManualCsvImportController extends Controller
 
     protected function deleteDirectory(string $path): void
     {
-        if (!is_dir($path)) return;
+        if (!is_dir($path))
+            return;
 
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS),
