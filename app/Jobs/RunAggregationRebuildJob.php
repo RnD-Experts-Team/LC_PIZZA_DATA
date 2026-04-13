@@ -61,6 +61,8 @@ class RunAggregationRebuildJob implements ShouldQueue
             $processed = 0;
             $successful = 0;
             $failed = 0;
+            $skipped = 0;
+            $rowsWritten = 0;
             $failedUnits = [];
 
             $this->updateProgress('processing', [
@@ -70,6 +72,8 @@ class RunAggregationRebuildJob implements ShouldQueue
                 'processed' => 0,
                 'successful' => 0,
                 'failed' => 0,
+                'skipped' => 0,
+                'rows_written' => 0,
                 'current_date' => null,
                 'current_unit' => null,
                 'failed_units' => [],
@@ -82,13 +86,48 @@ class RunAggregationRebuildJob implements ShouldQueue
                     'processed' => $processed,
                     'successful' => $successful,
                     'failed' => $failed,
+                    'skipped' => $skipped,
+                    'rows_written' => $rowsWritten,
                     'current_date' => $this->unitDateForProgress($unit),
                     'current_unit' => $unit,
                 ]);
 
                 try {
-                    $this->runUnit($service, $unit);
-                    $successful++;
+                    $result = $this->runUnit($service, $unit);
+                    $result = $this->normalizeUnitResult($unit, $result);
+
+                    $rowsWritten += (int) ($result['rows_written'] ?? 0);
+
+                    if (($result['status'] ?? 'success') === 'failed') {
+                        $failed++;
+
+                        $failedUnits[] = [
+                            'stage' => $unit['stage'],
+                            'label' => $unit['label'],
+                            'message' => $result['message'] ?? 'Unit failed',
+                            'source_rows' => (int) ($result['source_rows'] ?? 0),
+                            'rows_written' => (int) ($result['rows_written'] ?? 0),
+                            'failed_at' => now()->toISOString(),
+                        ];
+
+                        Log::error('Aggregation rebuild unit failed', [
+                            'aggregation_id' => $this->aggregationId,
+                            'type' => $this->type,
+                            'stages' => $stages,
+                            'unit' => $unit,
+                            'result' => $result,
+                        ]);
+                    } elseif (($result['status'] ?? 'success') === 'skipped') {
+                        $skipped++;
+                    } else {
+                        $successful++;
+                    }
+
+                    Log::info('Aggregation rebuild unit completed', [
+                        'aggregation_id' => $this->aggregationId,
+                        'unit' => $unit,
+                        'result' => $result,
+                    ]);
                 } catch (\Throwable $e) {
                     $failed++;
 
@@ -101,7 +140,7 @@ class RunAggregationRebuildJob implements ShouldQueue
 
                     $failedUnits[] = $failedUnit;
 
-                    Log::error('Aggregation rebuild unit failed', [
+                    Log::error('Aggregation rebuild unit crashed', [
                         'aggregation_id' => $this->aggregationId,
                         'type' => $this->type,
                         'stages' => $stages,
@@ -118,6 +157,8 @@ class RunAggregationRebuildJob implements ShouldQueue
                     'processed' => $processed,
                     'successful' => $successful,
                     'failed' => $failed,
+                    'skipped' => $skipped,
+                    'rows_written' => $rowsWritten,
                     'current_date' => $processed < count($units)
                         ? $this->unitDateForProgress($units[$processed])
                         : null,
@@ -126,13 +167,17 @@ class RunAggregationRebuildJob implements ShouldQueue
                 ]);
             }
 
-            $this->updateProgress('completed', [
+            $finalStatus = $failed > 0 ? 'completed_with_errors' : 'completed';
+
+            $this->updateProgress($finalStatus, [
                 'type' => $this->type,
                 'stages' => $stages,
                 'total' => count($units),
                 'processed' => $processed,
                 'successful' => $successful,
                 'failed' => $failed,
+                'skipped' => $skipped,
+                'rows_written' => $rowsWritten,
                 'current_date' => null,
                 'current_unit' => null,
                 'failed_units' => array_slice($failedUnits, -50),
@@ -141,6 +186,45 @@ class RunAggregationRebuildJob implements ShouldQueue
         } finally {
             optional($lock)->release();
         }
+    }
+
+    protected function normalizeUnitResult(array $unit, mixed $result): array
+    {
+        if (!is_array($result)) {
+            return [
+                'status' => 'success',
+                'stage' => $unit['stage'],
+                'source_rows' => 0,
+                'rows_written' => 0,
+                'message' => 'Unit returned no result payload; treated as success.',
+            ];
+        }
+
+        $status = $result['status'] ?? 'success';
+        $sourceRows = (int) ($result['source_rows'] ?? 0);
+        $rowsWritten = (int) ($result['rows_written'] ?? 0);
+        $failedStores = (int) ($result['failed_stores'] ?? 0);
+        $failedHours = (int) ($result['failed_hours'] ?? 0);
+
+        if ($status === 'success' && ($failedStores > 0 || $failedHours > 0)) {
+            $status = 'failed';
+        }
+
+        if ($status === 'success' && $sourceRows > 0 && $rowsWritten === 0) {
+            $status = 'failed';
+        }
+
+        if ($status === 'success' && $sourceRows === 0 && $rowsWritten === 0) {
+            $status = 'skipped';
+        }
+
+        $result['status'] = $status;
+        $result['source_rows'] = $sourceRows;
+        $result['rows_written'] = $rowsWritten;
+        $result['failed_stores'] = $failedStores;
+        $result['failed_hours'] = $failedHours;
+
+        return $result;
     }
 
     protected function stagesFromType(string $type): array
@@ -285,9 +369,9 @@ class RunAggregationRebuildJob implements ShouldQueue
         return $units;
     }
 
-    protected function runUnit(AggregationService $service, array $unit): void
+    protected function runUnit(AggregationService $service, array $unit): array
     {
-        match ($unit['stage']) {
+        return match ($unit['stage']) {
             'hourly' => $service->updateHourlySummaries(Carbon::parse($unit['date']), $this->aggregationId),
             'daily' => $service->updateDailySummaries(Carbon::parse($unit['date']), $this->aggregationId),
             'weekly' => $service->updateWeeklySummariesRange(
@@ -297,7 +381,13 @@ class RunAggregationRebuildJob implements ShouldQueue
             'monthly' => $service->updateMonthlySummariesYearMonth($unit['year'], $unit['month']),
             'quarterly' => $service->updateQuarterlySummariesYearQuarter($unit['year'], $unit['quarter']),
             'yearly' => $service->updateYearlySummariesYear($unit['year']),
-            default => null,
+            default => [
+                'status' => 'failed',
+                'stage' => $unit['stage'] ?? 'unknown',
+                'source_rows' => 0,
+                'rows_written' => 0,
+                'message' => 'Unknown stage',
+            ],
         };
     }
 

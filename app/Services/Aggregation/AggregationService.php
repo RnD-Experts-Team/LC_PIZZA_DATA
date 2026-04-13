@@ -15,7 +15,6 @@ use App\Models\Aggregation\QuarterlyItemSummary;
 use App\Models\Aggregation\YearlyStoreSummary;
 use App\Models\Aggregation\YearlyItemSummary;
 use App\Services\Database\DatabaseRouter;
-
 use Carbon\Carbon;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
@@ -60,6 +59,42 @@ class AggregationService
         });
     }
 
+    private function stageResult(
+        string $stage,
+        string $status,
+        int $sourceRows = 0,
+        int $rowsWritten = 0,
+        int $storesFound = 0,
+        int $storesFailed = 0,
+        int $hoursFound = 0,
+        int $hoursFailed = 0,
+        ?string $message = null,
+        array $extra = []
+    ): array {
+        return array_merge([
+            'stage' => $stage,
+            'status' => $status,
+            'source_rows' => $sourceRows,
+            'rows_written' => $rowsWritten,
+            'stores_found' => $storesFound,
+            'failed_stores' => $storesFailed,
+            'hours_found' => $hoursFound,
+            'failed_hours' => $hoursFailed,
+            'message' => $message,
+        ], $extra);
+    }
+
+    private function emptyStageResult(string $stage, string $message): array
+    {
+        return $this->stageResult(
+            stage: $stage,
+            status: 'skipped',
+            sourceRows: 0,
+            rowsWritten: 0,
+            message: $message
+        );
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // PUBLIC ENTRY POINTS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -67,127 +102,239 @@ class AggregationService
     /**
      * Update hourly summaries from RAW transactional data (hot + archive)
      */
-    public function updateHourlySummaries(Carbon $date, ?string $rebuildId = null): void
+    public function updateHourlySummaries(Carbon $date, ?string $rebuildId = null): array
     {
         $dateStr = $date->toDateString();
 
+        $source = $this->routedSource('detail_orders', $date, $date)
+            ->where('business_date', $dateStr);
 
-        $stores = $this->routedSource('detail_orders', $date, $date)
-            ->where('business_date', $dateStr)
+        $sourceRows = (clone $source)->count();
+
+        if ($sourceRows === 0) {
+            Log::info('Hourly stage skipped: no detail_orders rows', [
+                'rebuild_id' => $rebuildId,
+                'business_date' => $dateStr,
+            ]);
+
+            return $this->emptyStageResult('hourly', 'No raw detail_orders rows for date.');
+        }
+
+        $stores = (clone $source)
             ->distinct()
-            ->pluck('franchise_store');
+            ->pluck('franchise_store')
+            ->filter(fn($store) => $store !== null && $store !== '')
+            ->values();
 
+        $storesFound = $stores->count();
 
+        if ($storesFound === 0) {
+            Log::warning('Hourly stage found source rows but no stores', [
+                'rebuild_id' => $rebuildId,
+                'business_date' => $dateStr,
+                'source_rows' => $sourceRows,
+            ]);
 
+            return $this->stageResult(
+                stage: 'hourly',
+                status: 'failed',
+                sourceRows: $sourceRows,
+                rowsWritten: 0,
+                storesFound: 0,
+                storesFailed: 0,
+                message: 'Raw rows exist but no franchise_store values were discovered.',
+                extra: [
+                    'business_date' => $dateStr,
+                ]
+            );
+        }
+
+        $rowsWritten = 0;
+        $failedStores = 0;
+        $hoursFound = 0;
+        $failedHours = 0;
 
         foreach ($stores as $store) {
             try {
+                $storeResult = $this->updateHourlyStoreSummary((string) $store, $date, $rebuildId);
+                $itemResult = $this->updateHourlyItemSummary((string) $store, $date, $rebuildId);
 
+                $rowsWritten += (int) ($storeResult['rows_written'] ?? 0);
+                $rowsWritten += (int) ($itemResult['rows_written'] ?? 0);
 
-                $this->updateHourlyStoreSummary((string) $store, $date, $rebuildId);
-                $this->updateHourlyItemSummary((string) $store, $date, $rebuildId);
+                $hoursFound += (int) ($storeResult['hours_found'] ?? 0);
+                $hoursFound += (int) ($itemResult['hours_found'] ?? 0);
 
-
+                $failedHours += (int) ($storeResult['failed_hours'] ?? 0);
+                $failedHours += (int) ($itemResult['failed_hours'] ?? 0);
             } catch (\Throwable $e) {
+                $failedStores++;
+
                 Log::error('Hourly aggregation failed for store', [
                     'rebuild_id' => $rebuildId,
                     'business_date' => $dateStr,
                     'store' => (string) $store,
-                    'exception' => $e,
+                    'exception' => $e->getMessage(),
                 ]);
             }
         }
 
+        $status = $failedStores > 0 || $failedHours > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'hourly',
+            status: $status,
+            sourceRows: $sourceRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            hoursFound: $hoursFound,
+            hoursFailed: $failedHours,
+            message: $status === 'success'
+            ? 'Hourly stage completed.'
+            : 'Hourly stage completed with failures or zero writes despite source rows.',
+            extra: [
+                'business_date' => $dateStr,
+            ]
+        );
     }
 
     /**
      * Update daily summaries from HOURLY data
      */
-    public function updateDailySummaries(Carbon $date, ?string $rebuildId = null): void
+    public function updateDailySummaries(Carbon $date, ?string $rebuildId = null): array
     {
         $dateStr = $date->toDateString();
 
+        $hourlyRows = HourlyStoreSummary::where('business_date', $dateStr)->count();
 
+        if ($hourlyRows === 0) {
+            Log::info('Daily stage skipped: no hourly rows', [
+                'rebuild_id' => $rebuildId,
+                'business_date' => $dateStr,
+            ]);
+
+            return $this->emptyStageResult('daily', 'No hourly summary rows for date.');
+        }
 
         $stores = HourlyStoreSummary::where('business_date', $dateStr)
             ->distinct()
-            ->pluck('franchise_store');
+            ->pluck('franchise_store')
+            ->filter(fn($store) => $store !== null && $store !== '')
+            ->values();
 
+        $storesFound = $stores->count();
 
+        if ($storesFound === 0) {
+            Log::warning('Daily stage found hourly rows but no stores', [
+                'rebuild_id' => $rebuildId,
+                'business_date' => $dateStr,
+                'hourly_rows' => $hourlyRows,
+            ]);
 
+            return $this->stageResult(
+                stage: 'daily',
+                status: 'failed',
+                sourceRows: $hourlyRows,
+                rowsWritten: 0,
+                storesFound: 0,
+                storesFailed: 0,
+                message: 'Hourly rows exist but no franchise_store values were discovered.',
+                extra: [
+                    'business_date' => $dateStr,
+                ]
+            );
+        }
+
+        $rowsWritten = 0;
+        $failedStores = 0;
 
         foreach ($stores as $store) {
             try {
-
-
-                $this->aggregateDailyFromHourly((string) $store, $date);
-                $this->aggregateDailyItemsFromHourly((string) $store, $date);
-
-
+                $rowsWritten += $this->aggregateDailyFromHourly((string) $store, $date);
+                $rowsWritten += $this->aggregateDailyItemsFromHourly((string) $store, $date);
             } catch (\Throwable $e) {
+                $failedStores++;
+
                 Log::error('Daily aggregation failed for store', [
                     'rebuild_id' => $rebuildId,
                     'business_date' => $dateStr,
                     'store' => (string) $store,
-                    'exception' => $e,
+                    'exception' => $e->getMessage(),
                 ]);
             }
         }
 
+        $status = $failedStores > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'daily',
+            status: $status,
+            sourceRows: $hourlyRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            message: $status === 'success'
+            ? 'Daily stage completed.'
+            : 'Daily stage completed with failures or zero writes despite hourly source rows.',
+            extra: [
+                'business_date' => $dateStr,
+            ]
+        );
     }
 
     /**
      * Update weekly summaries from DAILY data
      */
-    public function updateWeeklySummaries(Carbon $date): void
+    public function updateWeeklySummaries(Carbon $date): array
     {
         $weekStart = $date->copy()->startOfWeek(Carbon::TUESDAY);
         $weekEnd = $date->copy()->endOfWeek(Carbon::MONDAY);
 
-
-        $this->updateWeeklySummariesRange($weekStart, $weekEnd);
+        return $this->updateWeeklySummariesRange($weekStart, $weekEnd);
     }
 
     /**
      * Update monthly summaries from WEEKLY data
      */
-    public function updateMonthlySummaries(Carbon $date): void
+    public function updateMonthlySummaries(Carbon $date): array
     {
         $year = $date->year;
         $month = $date->month;
 
-
-        $this->updateMonthlySummariesYearMonth($year, $month);
+        return $this->updateMonthlySummariesYearMonth($year, $month);
     }
 
     /**
      * Update quarterly summaries from MONTHLY data
      */
-    public function updateQuarterlySummaries(Carbon $date): void
+    public function updateQuarterlySummaries(Carbon $date): array
     {
         $year = $date->year;
         $quarter = (int) ceil($date->month / 3);
 
-
-        $this->updateQuarterlySummariesYearQuarter($year, $quarter);
+        return $this->updateQuarterlySummariesYearQuarter($year, $quarter);
     }
 
     /**
      * Update yearly summaries from QUARTERLY data
      */
-    public function updateYearlySummaries(Carbon $date): void
+    public function updateYearlySummaries(Carbon $date): array
     {
         $year = $date->year;
 
-
-        $this->updateYearlySummariesYear($year);
+        return $this->updateYearlySummariesYear($year);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HOURLY AGGREGATION FROM RAW DATA (HOT + ARCHIVE)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private function updateHourlyStoreSummary(string $store, Carbon $date, ?string $rebuildId = null): void
+    private function updateHourlyStoreSummary(string $store, Carbon $date, ?string $rebuildId = null): array
     {
         $dateStr = $date->toDateString();
 
@@ -199,25 +346,35 @@ class AggregationService
             ->selectRaw('DISTINCT HOUR(date_time_fulfilled) as hour')
             ->orderBy('hour')
             ->pluck('hour')
+            ->filter(fn($hour) => $hour !== null)
             ->map(fn($hour) => (int) $hour)
             ->values();
 
+        $hoursFound = $hours->count();
+        $rowsWritten = 0;
+        $failedHours = 0;
 
         foreach ($hours as $hour) {
             try {
-                $this->aggregateHourlyStoreData($store, $dateStr, (int) $hour, $rebuildId);
-
-
+                $rowsWritten += $this->aggregateHourlyStoreData($store, $dateStr, (int) $hour, $rebuildId);
             } catch (\Throwable $e) {
-                Log::error('Hourly aggregation failed for store', [
+                $failedHours++;
+
+                Log::error('Hourly store aggregation failed for hour', [
                     'rebuild_id' => $rebuildId,
                     'business_date' => $dateStr,
                     'store' => (string) $store,
                     'hour' => (int) $hour,
-                    'exception' => $e,
+                    'exception' => $e->getMessage(),
                 ]);
             }
         }
+
+        return [
+            'rows_written' => $rowsWritten,
+            'hours_found' => $hoursFound,
+            'failed_hours' => $failedHours,
+        ];
     }
 
     /**
@@ -229,18 +386,14 @@ class AggregationService
      * - delivery_orders/sales and carryout_orders/sales are sums of the category splits
      * - cash_sales hourly is estimated; daily overrides with financial_views "Total Cash Sales"
      */
-    private function aggregateHourlyStoreData(string $store, string $date, int $hour, ?string $rebuildId = null): void
+    private function aggregateHourlyStoreData(string $store, string $date, int $hour, ?string $rebuildId = null): int
     {
         $day = Carbon::parse($date);
-
-
 
         $baseOrders = $this->routedSource('detail_orders', $day, $day)
             ->where('franchise_store', $store)
             ->where('business_date', $date)
             ->whereRaw('HOUR(date_time_fulfilled) = ?', [$hour]);
-
-
 
         $totalSales = (float) (clone $baseOrders)->sum('royalty_obligation');
         $grossSales = (float) (clone $baseOrders)->sum('gross_sales');
@@ -472,20 +625,20 @@ class AggregationService
             'hnr_broken_promises' => $hnrBrokenPromises,
         ];
 
-
-
         $this->replaceRow(HourlyStoreSummary::class, [
             'franchise_store' => $store,
             'business_date' => $date,
             'hour' => $hour,
         ], $data);
+
+        return 1;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HOURLY ITEM AGGREGATION FROM RAW LINES (HOT + ARCHIVE)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private function updateHourlyItemSummary(string $store, Carbon $date, ?string $rebuildId = null): void
+    private function updateHourlyItemSummary(string $store, Carbon $date, ?string $rebuildId = null): array
     {
         $dateStr = $date->toDateString();
 
@@ -497,35 +650,40 @@ class AggregationService
             ->selectRaw('DISTINCT HOUR(date_time_fulfilled) as hour')
             ->orderBy('hour')
             ->pluck('hour')
+            ->filter(fn($hour) => $hour !== null)
             ->map(fn($hour) => (int) $hour)
             ->values();
 
-
-
-
+        $hoursFound = $hours->count();
+        $rowsWritten = 0;
+        $failedHours = 0;
 
         foreach ($hours as $hour) {
             try {
-                $this->aggregateHourlyItemData($store, $dateStr, (int) $hour, $rebuildId);
-
-
+                $rowsWritten += $this->aggregateHourlyItemData($store, $dateStr, (int) $hour, $rebuildId);
             } catch (\Throwable $e) {
-                Log::error('Hourly item aggregation failed for store', [
+                $failedHours++;
+
+                Log::error('Hourly item aggregation failed for hour', [
                     'rebuild_id' => $rebuildId,
                     'business_date' => $dateStr,
                     'store' => (string) $store,
                     'hour' => (int) $hour,
-                    'exception' => $e,
+                    'exception' => $e->getMessage(),
                 ]);
             }
         }
+
+        return [
+            'rows_written' => $rowsWritten,
+            'hours_found' => $hoursFound,
+            'failed_hours' => $failedHours,
+        ];
     }
 
-    private function aggregateHourlyItemData(string $store, string $date, int $hour, ?string $rebuildId = null): void
+    private function aggregateHourlyItemData(string $store, string $date, int $hour, ?string $rebuildId = null): int
     {
         $day = Carbon::parse($date);
-
-
 
         $lines = $this->routedSource('order_line', $day, $day)
             ->where('franchise_store', $store)
@@ -545,14 +703,12 @@ class AggregationService
                 'modified_order_amount',
             ]);
 
-
-
         $items = $lines->groupBy(
             fn($r) =>
             "{$r->franchise_store}|{$r->business_date}|{$r->item_id}|{$r->menu_item_name}|{$r->menu_item_account}"
         );
 
-
+        $rowsWritten = 0;
 
         foreach ($items as $group) {
             $first = $group->first();
@@ -588,21 +744,24 @@ class AggregationService
                 'refunded_quantity' => (float) $group->where('refunded', 'Yes')->sum('quantity'),
             ];
 
-
-
             $this->replaceRow(HourlyItemSummary::class, [
                 'franchise_store' => $first->franchise_store,
                 'business_date' => $first->business_date,
                 'hour' => $hour,
                 'item_id' => $first->item_id,
             ], $data);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // DAILY AGGREGATION FROM HOURLY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private function aggregateDailyFromHourly(string $store, Carbon $date): void
+    private function aggregateDailyFromHourly(string $store, Carbon $date): int
     {
         $dateStr = $date->toDateString();
 
@@ -611,10 +770,9 @@ class AggregationService
             ->get();
 
         if ($hourly->isEmpty()) {
-            return;
+            return 0;
         }
 
-        // Over/short from summary_sales (hot+archive)
         $dailySummary = $this->routedSource('summary_sales', $date, $date)
             ->where('franchise_store', $store)
             ->where('business_date', $dateStr)
@@ -622,7 +780,6 @@ class AggregationService
 
         $overShort = (float) ($dailySummary->over_short ?? 0);
 
-        // ✅ Cash sales from financial_views (hot+archive) where sub_account = "Total Cash Sales"
         $cashSales = (float) $this->routedSource('financial_views', $date, $date)
             ->where('franchise_store', $store)
             ->where('business_date', $dateStr)
@@ -635,7 +792,6 @@ class AggregationService
             'over_short' => $overShort,
         ]);
 
-        // Override daily cash with financial_views truth
         $summary['cash_sales'] = round($cashSales, 2);
 
         $inStoreTips = (float) $this->routedSource('financial_views', $date, $date)
@@ -653,13 +809,16 @@ class AggregationService
         $summary['store_tips'] = round($inStoreTips, 2);
         $summary['delivery_tips'] = round($deliveryTips, 2);
         $summary['total_tips'] = round($deliveryTips + $inStoreTips, 2);
+
         $this->replaceRow(DailyStoreSummary::class, [
             'franchise_store' => $store,
             'business_date' => $dateStr,
         ], $summary);
+
+        return 1;
     }
 
-    private function aggregateDailyItemsFromHourly(string $store, Carbon $date): void
+    private function aggregateDailyItemsFromHourly(string $store, Carbon $date): int
     {
         $dateStr = $date->toDateString();
 
@@ -681,6 +840,8 @@ class AggregationService
             ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
             ->get();
 
+        $rowsWritten = 0;
+
         foreach ($items as $item) {
             $this->replaceRow(DailyItemSummary::class, [
                 'franchise_store' => $store,
@@ -701,26 +862,79 @@ class AggregationService
                 'modified_quantity' => $item->modified_quantity,
                 'refunded_quantity' => $item->refunded_quantity,
             ]);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // WEEKLY AGGREGATION FROM DAILY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public function updateWeeklySummariesRange(Carbon $start, Carbon $end): void
+    public function updateWeeklySummariesRange(Carbon $start, Carbon $end): array
     {
+        $sourceRows = DailyStoreSummary::whereBetween('business_date', [
+            $start->toDateString(),
+            $end->toDateString(),
+        ])->count();
+
+        if ($sourceRows === 0) {
+            Log::info('Weekly stage skipped: no daily rows', [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+            ]);
+
+            return $this->emptyStageResult('weekly', 'No daily summary rows in requested range.');
+        }
+
         $weeks = DailyStoreSummary::whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
             ->selectRaw('DISTINCT franchise_store, YEAR(business_date) as y, WEEK(business_date, 3) as w')
             ->get();
 
+        $storesFound = $weeks->count();
+        $rowsWritten = 0;
+        $failedStores = 0;
+
         foreach ($weeks as $week) {
-            $this->aggregateWeeklyStore((string) $week->franchise_store, (int) $week->y, (int) $week->w);
-            $this->aggregateWeeklyItems((string) $week->franchise_store, (int) $week->y, (int) $week->w);
+            try {
+                $rowsWritten += $this->aggregateWeeklyStore((string) $week->franchise_store, (int) $week->y, (int) $week->w);
+                $rowsWritten += $this->aggregateWeeklyItems((string) $week->franchise_store, (int) $week->y, (int) $week->w);
+            } catch (\Throwable $e) {
+                $failedStores++;
+
+                Log::error('Weekly aggregation failed for store/week', [
+                    'store' => (string) $week->franchise_store,
+                    'year' => (int) $week->y,
+                    'week' => (int) $week->w,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
+
+        $status = $failedStores > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'weekly',
+            status: $status,
+            sourceRows: $sourceRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            message: $status === 'success'
+            ? 'Weekly stage completed.'
+            : 'Weekly stage completed with failures or zero writes despite daily source rows.',
+            extra: [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+            ]
+        );
     }
 
-    private function aggregateWeeklyStore(string $store, int $year, int $week): void
+    private function aggregateWeeklyStore(string $store, int $year, int $week): int
     {
         $weekStart = Carbon::now()->setISODate($year, $week)->startOfWeek(Carbon::TUESDAY);
         $weekEnd = $weekStart->copy()->endOfWeek(Carbon::MONDAY);
@@ -730,7 +944,7 @@ class AggregationService
             ->get();
 
         if ($daily->isEmpty()) {
-            return;
+            return 0;
         }
 
         $summary = $this->sumStorePeriod($daily, [
@@ -776,9 +990,11 @@ class AggregationService
             'year_num' => $year,
             'week_num' => $week,
         ], $summary);
+
+        return 1;
     }
 
-    private function aggregateWeeklyItems(string $store, int $year, int $week): void
+    private function aggregateWeeklyItems(string $store, int $year, int $week): int
     {
         $weekStart = Carbon::now()->setISODate($year, $week)->startOfWeek(Carbon::TUESDAY);
         $weekEnd = $weekStart->copy()->endOfWeek(Carbon::MONDAY);
@@ -799,6 +1015,8 @@ class AggregationService
             ')
             ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
             ->get();
+
+        $rowsWritten = 0;
 
         foreach ($items as $item) {
             $this->replaceRow(WeeklyItemSummary::class, [
@@ -823,17 +1041,37 @@ class AggregationService
                 'week_start_date' => $weekStart->toDateString(),
                 'week_end_date' => $weekEnd->toDateString(),
             ]);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // MONTHLY AGGREGATION FROM WEEKLY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public function updateMonthlySummariesYearMonth(int $year, int $month): void
+    public function updateMonthlySummariesYearMonth(int $year, int $month): array
     {
         $monthStart = Carbon::create($year, $month, 1);
         $monthEnd = $monthStart->copy()->endOfMonth();
+
+        $sourceRows = WeeklyStoreSummary::where('year_num', $year)
+            ->where(function ($q) use ($monthStart, $monthEnd) {
+                $q->whereBetween('week_start_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
+                    ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
+            })
+            ->count();
+
+        if ($sourceRows === 0) {
+            Log::info('Monthly stage skipped: no weekly rows', [
+                'year' => $year,
+                'month' => $month,
+            ]);
+
+            return $this->emptyStageResult('monthly', 'No weekly summary rows for requested month.');
+        }
 
         $stores = WeeklyStoreSummary::where('year_num', $year)
             ->where(function ($q) use ($monthStart, $monthEnd) {
@@ -841,15 +1079,52 @@ class AggregationService
                     ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
             })
             ->distinct()
-            ->pluck('franchise_store');
+            ->pluck('franchise_store')
+            ->filter(fn($store) => $store !== null && $store !== '')
+            ->values();
+
+        $storesFound = $stores->count();
+        $rowsWritten = 0;
+        $failedStores = 0;
 
         foreach ($stores as $store) {
-            $this->aggregateMonthlyStore((string) $store, $year, $month);
-            $this->aggregateMonthlyItems((string) $store, $year, $month);
+            try {
+                $rowsWritten += $this->aggregateMonthlyStore((string) $store, $year, $month);
+                $rowsWritten += $this->aggregateMonthlyItems((string) $store, $year, $month);
+            } catch (\Throwable $e) {
+                $failedStores++;
+
+                Log::error('Monthly aggregation failed for store/month', [
+                    'store' => (string) $store,
+                    'year' => $year,
+                    'month' => $month,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
+
+        $status = $failedStores > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'monthly',
+            status: $status,
+            sourceRows: $sourceRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            message: $status === 'success'
+            ? 'Monthly stage completed.'
+            : 'Monthly stage completed with failures or zero writes despite weekly source rows.',
+            extra: [
+                'year' => $year,
+                'month' => $month,
+            ]
+        );
     }
 
-    private function aggregateMonthlyStore(string $store, int $year, int $month): void
+    private function aggregateMonthlyStore(string $store, int $year, int $month): int
     {
         $monthStart = Carbon::create($year, $month, 1);
         $monthEnd = $monthStart->copy()->endOfMonth();
@@ -863,7 +1138,7 @@ class AggregationService
             ->get();
 
         if ($weekly->isEmpty()) {
-            return;
+            return 0;
         }
 
         $operationalDays = DailyStoreSummary::where('franchise_store', $store)
@@ -910,9 +1185,11 @@ class AggregationService
             'year_num' => $year,
             'month_num' => $month,
         ], $summary);
+
+        return 1;
     }
 
-    private function aggregateMonthlyItems(string $store, int $year, int $month): void
+    private function aggregateMonthlyItems(string $store, int $year, int $month): int
     {
         $monthStart = Carbon::create($year, $month, 1);
         $monthEnd = $monthStart->copy()->endOfMonth();
@@ -938,6 +1215,8 @@ class AggregationService
             ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
             ->get();
 
+        $rowsWritten = 0;
+
         foreach ($items as $item) {
             $this->replaceRow(MonthlyItemSummary::class, [
                 'franchise_store' => $store,
@@ -959,30 +1238,84 @@ class AggregationService
                 'delivery_quantity' => $item->delivery_quantity,
                 'carryout_quantity' => $item->carryout_quantity,
             ]);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // QUARTERLY AGGREGATION FROM MONTHLY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public function updateQuarterlySummariesYearQuarter(int $year, int $quarter): void
+    public function updateQuarterlySummariesYearQuarter(int $year, int $quarter): array
     {
         $m1 = ($quarter - 1) * 3 + 1;
         $m3 = $quarter * 3;
 
+        $sourceRows = MonthlyStoreSummary::where('year_num', $year)
+            ->whereBetween('month_num', [$m1, $m3])
+            ->count();
+
+        if ($sourceRows === 0) {
+            Log::info('Quarterly stage skipped: no monthly rows', [
+                'year' => $year,
+                'quarter' => $quarter,
+            ]);
+
+            return $this->emptyStageResult('quarterly', 'No monthly summary rows for requested quarter.');
+        }
+
         $stores = MonthlyStoreSummary::where('year_num', $year)
             ->whereBetween('month_num', [$m1, $m3])
             ->distinct()
-            ->pluck('franchise_store');
+            ->pluck('franchise_store')
+            ->filter(fn($store) => $store !== null && $store !== '')
+            ->values();
+
+        $storesFound = $stores->count();
+        $rowsWritten = 0;
+        $failedStores = 0;
 
         foreach ($stores as $store) {
-            $this->aggregateQuarterlyStore((string) $store, $year, $quarter);
-            $this->aggregateQuarterlyItems((string) $store, $year, $quarter);
+            try {
+                $rowsWritten += $this->aggregateQuarterlyStore((string) $store, $year, $quarter);
+                $rowsWritten += $this->aggregateQuarterlyItems((string) $store, $year, $quarter);
+            } catch (\Throwable $e) {
+                $failedStores++;
+
+                Log::error('Quarterly aggregation failed for store/quarter', [
+                    'store' => (string) $store,
+                    'year' => $year,
+                    'quarter' => $quarter,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
+
+        $status = $failedStores > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'quarterly',
+            status: $status,
+            sourceRows: $sourceRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            message: $status === 'success'
+            ? 'Quarterly stage completed.'
+            : 'Quarterly stage completed with failures or zero writes despite monthly source rows.',
+            extra: [
+                'year' => $year,
+                'quarter' => $quarter,
+            ]
+        );
     }
 
-    private function aggregateQuarterlyStore(string $store, int $year, int $quarter): void
+    private function aggregateQuarterlyStore(string $store, int $year, int $quarter): int
     {
         $m1 = ($quarter - 1) * 3 + 1;
         $m3 = $quarter * 3;
@@ -993,7 +1326,7 @@ class AggregationService
             ->get();
 
         if ($monthly->isEmpty()) {
-            return;
+            return 0;
         }
 
         $qStart = Carbon::create($year, $m1, 1);
@@ -1040,9 +1373,11 @@ class AggregationService
             'year_num' => $year,
             'quarter_num' => $quarter,
         ], $summary);
+
+        return 1;
     }
 
-    private function aggregateQuarterlyItems(string $store, int $year, int $quarter): void
+    private function aggregateQuarterlyItems(string $store, int $year, int $quarter): int
     {
         $m1 = ($quarter - 1) * 3 + 1;
         $m3 = $quarter * 3;
@@ -1068,6 +1403,8 @@ class AggregationService
             ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
             ->get();
 
+        $rowsWritten = 0;
+
         foreach ($items as $item) {
             $this->replaceRow(QuarterlyItemSummary::class, [
                 'franchise_store' => $store,
@@ -1091,33 +1428,82 @@ class AggregationService
                 'quarter_start_date' => $qStart->toDateString(),
                 'quarter_end_date' => $qEnd->toDateString(),
             ]);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // YEARLY AGGREGATION FROM QUARTERLY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    public function updateYearlySummariesYear(int $year): void
+    public function updateYearlySummariesYear(int $year): array
     {
+        $sourceRows = QuarterlyStoreSummary::where('year_num', $year)->count();
+
+        if ($sourceRows === 0) {
+            Log::info('Yearly stage skipped: no quarterly rows', [
+                'year' => $year,
+            ]);
+
+            return $this->emptyStageResult('yearly', 'No quarterly summary rows for requested year.');
+        }
+
         $stores = QuarterlyStoreSummary::where('year_num', $year)
             ->distinct()
-            ->pluck('franchise_store');
+            ->pluck('franchise_store')
+            ->filter(fn($store) => $store !== null && $store !== '')
+            ->values();
+
+        $storesFound = $stores->count();
+        $rowsWritten = 0;
+        $failedStores = 0;
 
         foreach ($stores as $store) {
-            $this->aggregateYearlyStore((string) $store, $year);
-            $this->aggregateYearlyItems((string) $store, $year);
+            try {
+                $rowsWritten += $this->aggregateYearlyStore((string) $store, $year);
+                $rowsWritten += $this->aggregateYearlyItems((string) $store, $year);
+            } catch (\Throwable $e) {
+                $failedStores++;
+
+                Log::error('Yearly aggregation failed for store/year', [
+                    'store' => (string) $store,
+                    'year' => $year,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
+
+        $status = $failedStores > 0
+            ? 'failed'
+            : ($rowsWritten > 0 ? 'success' : 'failed');
+
+        return $this->stageResult(
+            stage: 'yearly',
+            status: $status,
+            sourceRows: $sourceRows,
+            rowsWritten: $rowsWritten,
+            storesFound: $storesFound,
+            storesFailed: $failedStores,
+            message: $status === 'success'
+            ? 'Yearly stage completed.'
+            : 'Yearly stage completed with failures or zero writes despite quarterly source rows.',
+            extra: [
+                'year' => $year,
+            ]
+        );
     }
 
-    private function aggregateYearlyStore(string $store, int $year): void
+    private function aggregateYearlyStore(string $store, int $year): int
     {
         $quarterly = QuarterlyStoreSummary::where('franchise_store', $store)
             ->where('year_num', $year)
             ->get();
 
         if ($quarterly->isEmpty()) {
-            return;
+            return 0;
         }
 
         $summary = $this->sumStorePeriod($quarterly, [
@@ -1143,9 +1529,11 @@ class AggregationService
             'franchise_store' => $store,
             'year_num' => $year,
         ], $summary);
+
+        return 1;
     }
 
-    private function aggregateYearlyItems(string $store, int $year): void
+    private function aggregateYearlyItems(string $store, int $year): int
     {
         $items = QuarterlyItemSummary::where('franchise_store', $store)
             ->where('year_num', $year)
@@ -1163,6 +1551,8 @@ class AggregationService
             ')
             ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
             ->get();
+
+        $rowsWritten = 0;
 
         foreach ($items as $item) {
             $this->replaceRow(YearlyItemSummary::class, [
@@ -1183,7 +1573,11 @@ class AggregationService
                 'delivery_quantity' => $item->delivery_quantity,
                 'carryout_quantity' => $item->carryout_quantity,
             ]);
+
+            $rowsWritten++;
         }
+
+        return $rowsWritten;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1229,13 +1623,13 @@ class AggregationService
             'grubhub_orders' => (int) $records->sum('grubhub_orders'),
             'grubhub_sales' => round((float) $records->sum('grubhub_sales'), 2),
 
-            // Fulfillment totals (these will be recomputed at end to ensure correctness)
+            // Fulfillment totals
             'delivery_orders' => (int) $records->sum('delivery_orders'),
             'delivery_sales' => round((float) $records->sum('delivery_sales'), 2),
             'carryout_orders' => (int) $records->sum('carryout_orders'),
             'carryout_sales' => round((float) $records->sum('carryout_sales'), 2),
 
-            // Category splits (Delivery vs Carryout)
+            // Category splits
             'pizza_delivery_quantity' => (int) $records->sum('pizza_delivery_quantity'),
             'pizza_delivery_sales' => round((float) $records->sum('pizza_delivery_sales'), 2),
             'pizza_carryout_quantity' => (int) $records->sum('pizza_carryout_quantity'),
@@ -1295,7 +1689,6 @@ class AggregationService
             'hnr_broken_promises' => (int) $records->sum('hnr_broken_promises'),
         ];
 
-        // Recompute derived rates
         $summary['avg_order_value'] = $summary['total_orders'] > 0
             ? round($summary['royalty_obligation'] / $summary['total_orders'], 2)
             : 0;
@@ -1312,17 +1705,15 @@ class AggregationService
             ? round(($summary['digital_orders'] / $summary['total_orders']) * 100, 2)
             : 0;
 
-        // ✅ Ensure fulfillment totals ALWAYS equal the sum of the category splits
-        $summary['delivery_orders'] =
-            (int) (
-                $summary['pizza_delivery_quantity']
-                + $summary['hnr_delivery_quantity']
-                + $summary['bread_delivery_quantity']
-                + $summary['wings_delivery_quantity']
-                + $summary['beverages_delivery_quantity']
-                + $summary['other_foods_delivery_quantity']
-                + $summary['side_items_delivery_quantity']
-            );
+        $summary['delivery_orders'] = (int) (
+            $summary['pizza_delivery_quantity']
+            + $summary['hnr_delivery_quantity']
+            + $summary['bread_delivery_quantity']
+            + $summary['wings_delivery_quantity']
+            + $summary['beverages_delivery_quantity']
+            + $summary['other_foods_delivery_quantity']
+            + $summary['side_items_delivery_quantity']
+        );
 
         $summary['delivery_sales'] = round(
             $summary['pizza_delivery_sales']
@@ -1335,16 +1726,15 @@ class AggregationService
             2
         );
 
-        $summary['carryout_orders'] =
-            (int) (
-                $summary['pizza_carryout_quantity']
-                + $summary['hnr_carryout_quantity']
-                + $summary['bread_carryout_quantity']
-                + $summary['wings_carryout_quantity']
-                + $summary['beverages_carryout_quantity']
-                + $summary['other_foods_carryout_quantity']
-                + $summary['side_items_carryout_quantity']
-            );
+        $summary['carryout_orders'] = (int) (
+            $summary['pizza_carryout_quantity']
+            + $summary['hnr_carryout_quantity']
+            + $summary['bread_carryout_quantity']
+            + $summary['wings_carryout_quantity']
+            + $summary['beverages_carryout_quantity']
+            + $summary['other_foods_carryout_quantity']
+            + $summary['side_items_carryout_quantity']
+        );
 
         $summary['carryout_sales'] = round(
             $summary['pizza_carryout_sales']
