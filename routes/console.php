@@ -7,14 +7,14 @@ use Illuminate\Support\Facades\Schedule;
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 $yesterday = now()->subDay()->toDateString();
-$twoDaysAgo = now()->subDays(2)->toDateString();
+$sevenDaysAgo = now()->subDays(7)->toDateString();
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// IMPORTS (BACKFILL - 3 PASSES)
+// IMPORTS (BACKFILL - 3 PASSES, LAST 7 DAYS)
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 // 9:20 AM ET
-Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
+Schedule::command("import:backfill --start={$sevenDaysAgo} --end={$yesterday}")
     ->dailyAt('09:20')
     ->timezone('America/New_York')
     ->withoutOverlapping()
@@ -23,7 +23,7 @@ Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
     ->name('import-backfill-morning');
 
 // 1:00 PM ET
-Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
+Schedule::command("import:backfill --start={$sevenDaysAgo} --end={$yesterday}")
     ->dailyAt('13:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
@@ -31,9 +31,9 @@ Schedule::command("import:backfill --start={$yesterday} --end={$yesterday}")
     ->appendOutputTo(storage_path('logs/import-backfill-afternoon.log'))
     ->name('import-backfill-afternoon');
 
-// FINAL PASS (2 days ago)
-Schedule::command("import:backfill --start={$twoDaysAgo} --end={$twoDaysAgo}")
-    ->dailyAt('09:00')
+// FINAL PASS (last 7 days)
+Schedule::command("import:backfill --start={$sevenDaysAgo} --end={$yesterday}")
+    ->dailyAt('21:00')
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
@@ -44,7 +44,7 @@ Schedule::command("import:backfill --start={$twoDaysAgo} --end={$twoDaysAgo}")
 // AGGREGATIONS (REBUILD - AFTER FINAL IMPORT)
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-$aggStart = now()->subDays(2)->toDateString();
+$aggStart = now()->subDays(7)->toDateString();
 $aggEnd = now()->subDay()->toDateString();
 
 // MORNING PASS: do hourly + daily together
