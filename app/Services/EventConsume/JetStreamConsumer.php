@@ -35,7 +35,9 @@ class JetStreamConsumer
      */
     private const SUBJECT_ALLOW_PREFIXES = [
         'auth.v1.',
-        'auth.testing.v1.'
+        'auth.testing.v1.',
+        'hiring.v1.',
+        'hiring.testing.v1.',
     ];
 
     private ?Client $client = null;

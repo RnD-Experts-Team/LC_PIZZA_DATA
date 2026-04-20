@@ -7,7 +7,7 @@ use App\Http\Requests\DataEntry\DueRangeRequest;
 use App\Services\DataEntry\DueKeyResolverService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
-
+use App\Models\Employee;
 class DueController extends Controller
 {
     public function __construct(
@@ -28,11 +28,11 @@ class DueController extends Controller
             Carbon::parse($date),
             $tagIds
         );
-
         return response()->json([
             'store_id' => $store_id,
             'date' => $date,
             'items' => $items,
+            'employees' => Employee::where('store_id', $store_id)->get(),
         ]);
     }
 

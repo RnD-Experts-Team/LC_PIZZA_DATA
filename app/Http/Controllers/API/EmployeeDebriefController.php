@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\EmployeeDebrief;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class EmployeeDebriefController extends Controller
 {
@@ -16,23 +17,33 @@ class EmployeeDebriefController extends Controller
     public function index(Request $request, string $store_id): JsonResponse
     {
 
+        $filters = $request->validate([
+            'employee_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('employees', 'id')->where(fn($query) => $query->where('store_id', $store_id)),
+            ],
+            'date' => 'nullable|date_format:Y-m-d',
+            'per_page' => 'nullable|integer|min:1|max:200',
+        ]);
+
         $q = EmployeeDebrief::query()
             ->where('store_id', $store_id)
-            ->with('author');
+            ->with(['author', 'employee']);
 
-        if ($request->filled('employee_name')) {
+        if (isset($filters['employee_id'])) {
 
-            $q->where('employee_name', 'like', '%' . $request->employee_name . '%');
-
-        }
-
-        if ($request->filled('date')) {
-
-            $q->whereDate('date', $request->date);
+            $q->where('employee_id', $filters['employee_id']);
 
         }
 
-        $perPage = (int) ($request->get('per_page', 50));
+        if (isset($filters['date'])) {
+
+            $q->whereDate('date', $filters['date']);
+
+        }
+
+        $perPage = (int) ($filters['per_page'] ?? 50);
 
         return response()->json(
             $q->orderByDesc('date')->paginate($perPage)
@@ -46,7 +57,11 @@ class EmployeeDebriefController extends Controller
     {
 
         $data = $request->validate([
-            'employee_name' => 'required|string|max:255',
+            'employee_id' => [
+                'required',
+                'integer',
+                Rule::exists('employees', 'id')->where(fn($query) => $query->where('store_id', $store_id)),
+            ],
             'note' => 'required|string|max:5000',
             'date' => 'required|date_format:Y-m-d'
         ]);
@@ -59,7 +74,7 @@ class EmployeeDebriefController extends Controller
 
             'user_id' => $user->id,
 
-            'employee_name' => $data['employee_name'],
+            'employee_id' => $data['employee_id'],
 
             'note' => $data['note'],
 
@@ -67,7 +82,7 @@ class EmployeeDebriefController extends Controller
 
         ]);
 
-        return response()->json($debrief, 201);
+        return response()->json($debrief->load(['author', 'employee']), 201);
     }
 
     /**
@@ -83,7 +98,7 @@ class EmployeeDebriefController extends Controller
         }
 
         return response()->json(
-            $debrief->load('author')
+            $debrief->load(['author', 'employee'])
         );
     }
 
@@ -113,7 +128,11 @@ class EmployeeDebriefController extends Controller
     {
         $data = $request->validate([
             'debriefs' => 'required|array|min:1',
-            'debriefs.*.employee_name' => 'required|string|max:255',
+            'debriefs.*.employee_id' => [
+                'required',
+                'integer',
+                Rule::exists('employees', 'id')->where(fn($query) => $query->where('store_id', $store_id)),
+            ],
             'debriefs.*.note' => 'required|string|max:5000',
             'debriefs.*.date' => 'required|date_format:Y-m-d',
         ]);
@@ -127,7 +146,7 @@ class EmployeeDebriefController extends Controller
             $records[] = [
                 'store_id' => $store_id,
                 'user_id' => $user->id,
-                'employee_name' => $item['employee_name'],
+                'employee_id' => $item['employee_id'],
                 'note' => $item['note'],
                 'date' => $item['date'],
                 'created_at' => now(),

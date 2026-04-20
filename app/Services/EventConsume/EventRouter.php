@@ -15,6 +15,9 @@ class EventRouter
             ? 'auth.testing.v1'
             : 'auth.v1';
 
+        $hiringPrefix = $devMode
+            ? 'hiring.testing.v1'
+            : 'hiring.v1';
 
         $this->map = [
             // USERS
@@ -27,6 +30,10 @@ class EventRouter
             "{$authPrefix}.assignment.user_role_store.removed" => \App\Services\EventConsume\Handlers\UserStoreRoleRemovedHandler::class,
             "{$authPrefix}.assignment.user_role_store.toggled" => \App\Services\EventConsume\Handlers\UserStoreRoleToggledHandler::class,
             "{$authPrefix}.assignment.user_role_store.bulk_assigned" => \App\Services\EventConsume\Handlers\UserStoreRoleBulkAssignedHandler::class,
+
+            // HIRING
+            "{$hiringPrefix}.employee.created" => \App\Services\EventConsume\Handlers\EmployeeCreatedHandler::class,
+            "{$hiringPrefix}.employee.updated" => \App\Services\EventConsume\Handlers\EmployeeUpdatedHandler::class,
         ];
     }
 

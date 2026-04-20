@@ -182,8 +182,9 @@
                         "type": "integer",
                         "description": "User who created the note"
                     },
-                    "employee_name": {
-                        "type": "string"
+                    "employee_id": {
+                        "type": "integer",
+                        "description": "Employee referenced by the note"
                     },
                     "note": {
                         "type": "string"
@@ -210,7 +211,7 @@
                     "id",
                     "store_id",
                     "user_id",
-                    "employee_name",
+                    "employee_id",
                     "note",
                     "date"
                 ]
@@ -219,9 +220,8 @@
             "EmployeeDebriefCreate": {
                 "type": "object",
                 "properties": {
-                    "employee_name": {
-                        "type": "string",
-                        "maxLength": 255
+                    "employee_id": {
+                        "type": "integer"
                     },
                     "note": {
                         "type": "string",
@@ -232,7 +232,7 @@
                         "format": "date"
                     }
                 },
-                "required": ["employee_name", "note", "date"]
+                "required": ["employee_id", "note", "date"]
             },
 
             "EmployeeDebriefBulkCreate": {
@@ -821,6 +821,42 @@
                 },
                 "required": ["id", "name"]
             },
+            "Employee": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer"
+                    },
+                    "first_name": {
+                        "type": "string",
+                        "maxLength": 100
+                    },
+                    "middle_name": {
+                        "type": "string",
+                        "maxLength": 100,
+                        "nullable": true
+                    },
+                    "last_name": {
+                        "type": "string",
+                        "maxLength": 100
+                    },
+                    "store_id": {
+                        "type": "string",
+                        "maxLength": 50
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    }
+                },
+                "required": ["id", "first_name", "last_name", "store_id"]
+            },
             "DueOnDateResponse": {
                 "type": "object",
                 "properties": {
@@ -829,9 +865,13 @@
                     "items": {
                         "type": "array",
                         "items": { "$ref": "#/components/schemas/DueItem" }
+                    },
+                    "employees": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/Employee" }
                     }
                 },
-                "required": ["store_id", "date", "items"]
+                "required": ["store_id", "date", "items", "employees"]
             },
             "DueRangeDay": {
                 "type": "array",
@@ -2867,9 +2907,9 @@
                         "schema": { "type": "string" }
                     },
                     {
-                        "name": "employee_name",
+                        "name": "employee_id",
                         "in": "query",
-                        "schema": { "type": "string" }
+                        "schema": { "type": "integer" }
                     },
                     {
                         "name": "date",
