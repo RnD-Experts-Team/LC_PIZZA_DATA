@@ -10,6 +10,9 @@ $dataSubject = $devMode
     ? 'data.testing.v1.>'
     : 'data.v1.>';
 
+$hiringSubject = $devMode
+    ? 'hiring.testing.v1.>'
+    : 'hiring.v1.>';
 return [
     'dev_mode' => $devMode,
     'host' => env('NATS_HOST', '127.0.0.1'),
@@ -39,7 +42,11 @@ return [
             'durable' => $devMode ? env('NATS_AUTH_DURABLE', 'DATA_AUTH_TESTING_CONSUMER') : env('NATS_AUTH_DURABLE', 'DATA_AUTH_CONSUMER'),
             'filter_subject' => $authSubject, // match your stream subjects
         ],
-
+        [
+            'name' => $devMode ? env('NATS_HIRING_STREAM', 'HIRING_TESTING_EVENTS') : env('NATS_HIRING_STREAM', 'HIRING_EVENTS'),
+            'durable' => $devMode ? env('NATS_HIRING_DURABLE', 'DATA_HIRING_TESTING_CONSUMER') : env('NATS_HIRING_DURABLE', 'DATA_HIRING_CONSUMER'),
+            'filter_subject' => $hiringSubject, // match your stream subjects
+        ],
         // Example additional stream later:
         // [
         //   'name' => env('NATS_PROJECT_STREAM', 'PROJECT_EVENTS'),

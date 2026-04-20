@@ -11,18 +11,24 @@ class EmployeeDebrief extends Model
     protected $fillable = [
         'store_id',
         'user_id',
-        'employee_name',
+        'employee_id',
         'note',
         'date'
     ];
 
     protected $casts = [
+        'employee_id' => 'integer',
         'date' => 'date'
     ];
 
     public function author(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'employee_id');
     }
 
 }
