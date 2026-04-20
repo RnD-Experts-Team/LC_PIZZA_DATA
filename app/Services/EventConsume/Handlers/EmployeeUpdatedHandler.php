@@ -164,7 +164,7 @@ class EmployeeUpdatedHandler implements EventHandlerInterface
         $latest = $this->latestEntry($statuses);
         $status = strtolower((string) data_get($latest, 'status', ''));
 
-        return $status === 'hired';
+        return in_array($status, ['hired', 'rehired'], true);
     }
 
     private function latestEntry(array $items): ?array
