@@ -32,7 +32,7 @@ class DueController extends Controller
             'store_id' => $store_id,
             'date' => $date,
             'items' => $items,
-            'employees' => Employee::where('store_id', $store_id)->get(),
+            'employees' => Employee::where('store_id', $store_id)->where('active', true)->get(),
         ]);
     }
 
