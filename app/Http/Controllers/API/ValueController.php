@@ -11,6 +11,7 @@ use App\Models\EnteredKeyValue;
 use App\Services\DataEntry\DueKeyResolverService;
 use App\Services\DataEntry\ValueTypeService;
 use Carbon\Carbon;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
@@ -65,6 +66,15 @@ class ValueController extends Controller
             ]
         );
 
+        if ($request->has('attachments') || $request->hasFile('attachments')) {
+            $this->syncUploadedAttachments(
+                $value,
+                $this->normalizeFiles($request->file('attachments', []))
+            );
+        }
+
+        $value->loadMissing('attachments');
+
         return response()->json($value);
     }
 
@@ -75,11 +85,11 @@ class ValueController extends Controller
     {
         $payload = $request->validated();
 
-        $saved = DB::transaction(function () use ($payload, $store_id, $date) {
+        $saved = DB::transaction(function () use ($payload, $request, $store_id, $date) {
 
             $out = [];
 
-            foreach ($payload['items'] as $item) {
+            foreach ($payload['items'] as $index => $item) {
 
                 $key = EnteredKey::findOrFail($item['key_id']);
 
@@ -103,7 +113,7 @@ class ValueController extends Controller
                     $identity['user_id'] = auth()->id();
                 }
 
-                $out[] = EnteredKeyValue::updateOrCreate(
+                $value = EnteredKeyValue::updateOrCreate(
                     $identity,
                     [
                         'user_id' => auth()->id(),
@@ -114,6 +124,17 @@ class ValueController extends Controller
                         'note' => $item['note'] ?? null,
                     ]
                 );
+
+                if (data_get($request->all(), "items.$index.attachments") !== null || $request->hasFile("items.$index.attachments")) {
+                    $this->syncUploadedAttachments(
+                        $value,
+                        $this->normalizeFiles($request->file("items.$index.attachments", []))
+                    );
+                }
+
+                $value->loadMissing('attachments');
+
+                $out[] = $value;
             }
 
             return $out;
@@ -135,7 +156,7 @@ class ValueController extends Controller
         $tagIds = $tags ? explode(',', $tags) : [];
 
         $q = EnteredKeyValue::query()
-            ->with(['key.tags']);
+            ->with(['key.tags', 'attachments']);
 
         if (!empty($v['key_id']))
             $q->where('key_id', $v['key_id']);
@@ -179,7 +200,7 @@ class ValueController extends Controller
         $tagIds = $tags ? explode(',', $tags) : [];
 
         $q = EnteredKeyValue::query()
-            ->with(['key.tags'])
+            ->with(['key.tags', 'attachments'])
             ->where('store_id', $store_id);
 
         if (!empty($v['key_id']))
@@ -289,5 +310,68 @@ class ValueController extends Controller
             'date' => $date->toDateString(),
             'grid' => $grid->values(),
         ]);
+    }
+
+    private function syncUploadedAttachments(EnteredKeyValue $value, array $files): void
+    {
+        $value->attachments()->delete();
+
+        if (empty($files)) {
+            return;
+        }
+
+        $folder = 'entered-key-values/' . $value->store_id . '/' . $value->entry_date->format('Y-m-d');
+
+        $payload = [];
+
+        foreach ($files as $file) {
+            if (!$file instanceof UploadedFile) {
+                continue;
+            }
+
+            $payload[] = [
+                'file_path' => $file->store($folder, 'public'),
+                'disk' => 'public',
+                'original_name' => $file->getClientOriginalName(),
+                'mime_type' => $file->getClientMimeType(),
+                'size' => $file->getSize(),
+            ];
+        }
+
+        if (empty($payload)) {
+            return;
+        }
+
+        $value->attachments()->createMany($payload);
+    }
+
+    /**
+     * @param UploadedFile|array<int, UploadedFile|array<int, UploadedFile>>|null $files
+     * @return array<int, UploadedFile>
+     */
+    private function normalizeFiles(UploadedFile|array|null $files): array
+    {
+        if ($files instanceof UploadedFile) {
+            return [$files];
+        }
+
+        if (!is_array($files)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($files as $file) {
+            if ($file instanceof UploadedFile) {
+                $normalized[] = $file;
+                continue;
+            }
+
+            if (is_array($file)) {
+                $normalized = array_merge($normalized, $this->normalizeFiles($file));
+            }
+        }
+
+        return $normalized;
     }
 }

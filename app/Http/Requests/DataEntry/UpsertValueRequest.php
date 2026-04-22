@@ -21,7 +21,10 @@ class UpsertValueRequest extends FormRequest
             'value_boolean' => 'nullable|boolean',
             'value_json' => 'nullable|array',
 
-            'note' => 'nullable|string|max:2000'
+            'note' => 'nullable|string|max:2000',
+
+            'attachments' => 'nullable|array',
+            'attachments.*' => 'file|max:10240',
         ];
     }
 
