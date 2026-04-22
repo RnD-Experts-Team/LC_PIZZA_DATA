@@ -917,6 +917,15 @@
                         "type": "string",
                         "nullable": true,
                         "maxLength": 2000
+                    },
+
+                    "attachments": {
+                        "type": "array",
+                        "nullable": true,
+                        "items": {
+                            "type": "string",
+                            "format": "binary"
+                        }
                     }
                 },
 
@@ -976,6 +985,13 @@
                         "description": "Optional note even if value is empty"
                     },
 
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/EnteredKeyValueAttachment"
+                        }
+                    },
+
                     "created_at": {
                         "type": "string",
                         "format": "date-time",
@@ -994,6 +1010,52 @@
                 },
 
                 "required": ["id", "key_id", "store_id", "entry_date"]
+            },
+            "EnteredKeyValueAttachment": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "entered_key_value_id": {
+                        "type": "integer"
+                    },
+                    "file_path": {
+                        "type": "string"
+                    },
+                    "disk": {
+                        "type": "string"
+                    },
+                    "original_name": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "size": {
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "attachment_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    }
+                },
+                "required": ["id", "entered_key_value_id", "file_path", "disk"]
             },
             "EnteredKeyValuePagination": {
                 "type": "object",
@@ -2629,6 +2691,13 @@
                             "schema": {
                                 "$ref": "#/components/schemas/UpsertValuePayload"
                             }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "allOf": [
+                                    { "$ref": "#/components/schemas/UpsertValuePayload" }
+                                ]
+                            }
                         }
                     }
                 },
@@ -2699,6 +2768,46 @@
                         "application/json": {
                             "schema": {
                                 "$ref": "#/components/schemas/BulkUpsertValuesRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "items": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "key_id": { "type": "integer" },
+                                                "value_text": { "type": "string", "nullable": true },
+                                                "value_number": { "type": "number", "nullable": true },
+                                                "value_boolean": { "type": "boolean", "nullable": true },
+                                                "value_json": {
+                                                    "type": "object",
+                                                    "nullable": true,
+                                                    "additionalProperties": true
+                                                },
+                                                "note": {
+                                                    "type": "string",
+                                                    "nullable": true,
+                                                    "maxLength": 2000
+                                                },
+                                                "attachments": {
+                                                    "type": "array",
+                                                    "nullable": true,
+                                                    "items": {
+                                                        "type": "string",
+                                                        "format": "binary"
+                                                    }
+                                                }
+                                            },
+                                            "required": ["key_id"]
+                                        }
+                                    }
+                                },
+                                "required": ["items"]
                             }
                         }
                     }
