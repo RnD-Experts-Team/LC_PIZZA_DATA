@@ -23,8 +23,8 @@ class UpsertValueRequest extends FormRequest
 
             'note' => 'nullable|string|max:2000',
 
-            'attachments' => 'nullable|array',
-            'attachments.*' => 'file|max:10240',
+            'attachments' => 'sometimes|array',
+            'attachments.*' => 'sometimes|file|max:10240',
         ];
     }
 
@@ -37,6 +37,9 @@ class UpsertValueRequest extends FormRequest
             'value_number.numeric' => 'value_number must be numeric.',
             'value_boolean.boolean' => 'value_boolean must be true/false.',
             'value_json.array' => 'value_json must be an array/object.',
+            'attachments.array' => 'attachments must be an array of files.',
+            'attachments.*.file' => 'Each attachment must be a valid file.',
+            'attachments.*.max' => 'Each attachment must not exceed 10MB.',
         ];
     }
 }

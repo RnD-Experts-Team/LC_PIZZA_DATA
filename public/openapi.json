@@ -921,10 +921,10 @@
 
                     "attachments": {
                         "type": "array",
-                        "nullable": true,
+                        "description": "Array of uploaded files. Supported only in multipart/form-data requests.",
                         "items": {
-                            "type": "string",
-                            "format": "binary"
+                            "type": "file",
+                            "description": "File"
                         }
                     }
                 },
@@ -1014,35 +1014,36 @@
             "EnteredKeyValueAttachment": {
                 "type": "object",
                 "properties": {
-                    "id": {
-                        "type": "integer",
-                        "readOnly": true
-                    },
-                    "entered_key_value_id": {
-                        "type": "integer"
-                    },
+                    "id": { "type": "integer", "readOnly": true },
+                    "entered_key_value_id": { "type": "integer" },
                     "file_path": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Stored relative file path on the disk"
                     },
                     "disk": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Storage disk used when saving this attachment"
                     },
                     "original_name": {
                         "type": "string",
-                        "nullable": true
+                        "nullable": true,
+                        "description": "Original uploaded filename"
                     },
                     "mime_type": {
                         "type": "string",
-                        "nullable": true
+                        "nullable": true,
+                        "description": "MIME type reported by the client upload"
                     },
                     "size": {
                         "type": "integer",
-                        "nullable": true
+                        "nullable": true,
+                        "description": "Attachment size in bytes"
                     },
                     "attachment_url": {
                         "type": "string",
                         "nullable": true,
-                        "readOnly": true
+                        "readOnly": true,
+                        "description": "Public URL resolved from file_path and disk"
                     },
                     "created_at": {
                         "type": "string",
@@ -2687,16 +2688,16 @@
                 "requestBody": {
                     "required": true,
                     "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/UpsertValuePayload"
-                            }
-                        },
                         "multipart/form-data": {
                             "schema": {
-                                "allOf": [
-                                    { "$ref": "#/components/schemas/UpsertValuePayload" }
-                                ]
+                                "$ref": "#/components/schemas/UpsertValuePayload"
+                            },
+                            "encoding": {
+                                "attachments": {
+                                    "style": "form",
+                                    "explode": true,
+                                    "contentType": "application/octet-stream"
+                                }
                             }
                         }
                     }
@@ -2765,50 +2766,11 @@
                 "requestBody": {
                     "required": true,
                     "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/BulkUpsertValuesRequest"
-                            }
-                        },
                         "multipart/form-data": {
                             "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "items": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "key_id": { "type": "integer" },
-                                                "value_text": { "type": "string", "nullable": true },
-                                                "value_number": { "type": "number", "nullable": true },
-                                                "value_boolean": { "type": "boolean", "nullable": true },
-                                                "value_json": {
-                                                    "type": "object",
-                                                    "nullable": true,
-                                                    "additionalProperties": true
-                                                },
-                                                "note": {
-                                                    "type": "string",
-                                                    "nullable": true,
-                                                    "maxLength": 2000
-                                                },
-                                                "attachments": {
-                                                    "type": "array",
-                                                    "nullable": true,
-                                                    "items": {
-                                                        "type": "string",
-                                                        "format": "binary"
-                                                    }
-                                                }
-                                            },
-                                            "required": ["key_id"]
-                                        }
-                                    }
-                                },
-                                "required": ["items"]
-                            }
+                                "$ref": "#/components/schemas/BulkUpsertValuesRequest"
+                            },
+                            "description": "For multipart with file uploads, send bracket-notation form keys per item such as: items[0][key_id], items[0][value_text], and items[0][attachments][] for each file."
                         }
                     }
                 },
