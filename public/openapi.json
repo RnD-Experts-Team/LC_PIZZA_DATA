@@ -189,6 +189,12 @@
                     "note": {
                         "type": "string"
                     },
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/EmployeeDebriefAttachment"
+                        }
+                    },
                     "date": {
                         "type": "string",
                         "format": "date"
@@ -226,6 +232,13 @@
                     "note": {
                         "type": "string",
                         "maxLength": 5000
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "binary"
+                        }
                     },
                     "date": {
                         "type": "string",
@@ -1057,6 +1070,53 @@
                     }
                 },
                 "required": ["id", "entered_key_value_id", "file_path", "disk"]
+            },
+            "EmployeeDebriefAttachment": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "readOnly": true },
+                    "employee_debrief_id": { "type": "integer" },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Stored relative file path on the disk"
+                    },
+                    "disk": {
+                        "type": "string",
+                        "description": "Storage disk used when saving this attachment"
+                    },
+                    "original_name": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "Original uploaded filename"
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "MIME type reported by the client upload"
+                    },
+                    "size": {
+                        "type": "integer",
+                        "nullable": true,
+                        "description": "Attachment size in bytes"
+                    },
+                    "attachment_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "readOnly": true,
+                        "description": "Public URL resolved from file_path and disk"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    }
+                },
+                "required": ["id", "employee_debrief_id", "file_path", "disk"]
             },
             "EnteredKeyValuePagination": {
                 "type": "object",
