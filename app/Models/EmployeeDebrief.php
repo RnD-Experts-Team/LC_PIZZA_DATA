@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class EmployeeDebrief extends Model
 {
@@ -21,6 +22,8 @@ class EmployeeDebrief extends Model
         'date' => 'date'
     ];
 
+    protected $with = ['attachments'];
+
     public function author(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
@@ -29,6 +32,11 @@ class EmployeeDebrief extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'employee_id');
+    }
+
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(EmployeeDebriefAttachment::class, 'employee_debrief_id');
     }
 
 }
