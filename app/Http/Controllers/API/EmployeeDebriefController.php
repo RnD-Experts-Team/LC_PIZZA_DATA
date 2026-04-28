@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\DataEntry\EmployeeDebriefRangeRequest;
 use App\Models\EmployeeDebrief;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -12,6 +14,65 @@ use Illuminate\Validation\Rule;
 
 class EmployeeDebriefController extends Controller
 {
+
+    /**
+     * Range of debrief notes grouped by date
+     */
+    public function range(EmployeeDebriefRangeRequest $request, string $store_id): JsonResponse
+    {
+        $filters = $request->validated();
+        $paginated = filter_var($request->query('paginated'), FILTER_VALIDATE_BOOLEAN);
+
+        $from = Carbon::parse($filters['from'])->startOfDay();
+        $to = Carbon::parse($filters['to'])->startOfDay();
+
+        $q = EmployeeDebrief::query()
+            ->where('store_id', $store_id)
+            ->whereBetween('date', [$from->toDateString(), $to->toDateString()])
+            ->with(['author', 'employee', 'attachments'])
+            ->orderByDesc('date')
+            ->orderByDesc('id');
+
+        if (isset($filters['employee_id'])) {
+            $q->where('employee_id', $filters['employee_id']);
+        }
+
+        $grouped = $q->get()->groupBy(fn($item) => $item->date->toDateString());
+
+        $days = [];
+        $cursor = $from->copy();
+
+        while ($cursor->lte($to)) {
+            $day = $cursor->toDateString();
+            $days[$day] = $grouped->get($day, collect())->values()->all();
+            $cursor->addDay();
+        }
+
+        if (!$paginated) {
+            return response()->json([
+                'store_id' => $store_id,
+                'from' => $from->toDateString(),
+                'to' => $to->toDateString(),
+                'days' => $days,
+            ]);
+        }
+
+        $page = (int) $request->query('page', 1);
+        $perPage = (int) $request->query('per_page', 20);
+        $collection = collect($days)->forPage($page, $perPage);
+
+        return response()->json([
+            'store_id' => $store_id,
+            'from' => $from->toDateString(),
+            'to' => $to->toDateString(),
+            'days' => $collection->values(),
+            'pagination' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'total_days' => count($days),
+            ],
+        ]);
+    }
 
     /**
      * List debrief notes
@@ -192,7 +253,7 @@ class EmployeeDebriefController extends Controller
             return;
         }
 
-        $folder = 'employee-debriefs/' . $debrief->store_id . '/' . $debrief->date->format('Y-m-d');
+        $folder = 'employee-debriefs/' . $debrief->store_id . '/' . Carbon::parse($debrief->date)->format('Y-m-d');
 
         $payload = [];
 

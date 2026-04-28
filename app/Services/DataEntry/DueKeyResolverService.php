@@ -42,7 +42,7 @@ class DueKeyResolverService
         $valuesToday = EnteredKeyValue::query()
             ->where('store_id', $storeId)
             ->whereDate('entry_date', $date)
-            ->with('attachments')
+            ->with('attachments', 'user')
             ->get();
 
         $valuesByKey = $valuesToday->groupBy('key_id');
@@ -53,7 +53,7 @@ class DueKeyResolverService
         $valuesThisMonth = EnteredKeyValue::query()
             ->where('store_id', $storeId)
             ->whereBetween('entry_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
-            ->with('attachments')
+            ->with('attachments', 'user')
             ->get()
             ->groupBy('key_id');
 
@@ -81,7 +81,8 @@ class DueKeyResolverService
 
                 if ($rule->fill_mode === 'store_once') {
 
-                    $filled = $existingValues->isNotEmpty();
+                    $value = $existingValues->sortByDesc('entry_date')->first();
+                    $filled = $value !== null;
 
                     $out->push([
                         'key_id' => $key->id,
@@ -91,8 +92,10 @@ class DueKeyResolverService
                         'interval' => (int) $rule->interval,
                         'mode' => 'monthly_any_day',
                         'fill_mode' => $rule->fill_mode,
+                        'user_id' => $value?->user_id,
+                        'user_name' => $value?->user?->name,
                         'filled' => $filled,
-                        'value' => $filled ? $existingValues->sortByDesc('entry_date')->first() : null,
+                        'value' => $this->serializeValueWithUserName($value),
                         'tags' => $key->tags,  // Add tags to the output
                     ]);
 
@@ -139,7 +142,7 @@ class DueKeyResolverService
                             'role_name' => $userRole->role_name,
 
                             'filled' => $value !== null,
-                            'value' => $value,
+                            'value' => $this->serializeValueWithUserName($value),
                             'tags' => $key->tags,  // Add tags to the output
                         ]);
                     }
@@ -173,8 +176,10 @@ class DueKeyResolverService
                     'interval' => (int) $rule->interval,
                     'mode' => 'date_specific',
                     'fill_mode' => $rule->fill_mode,
+                    'user_id' => $value?->user_id,
+                    'user_name' => $value?->user?->name,
                     'filled' => $value !== null,
-                    'value' => $value,
+                    'value' => $this->serializeValueWithUserName($value),
                     'tags' => $key->tags,  // Add tags to the output
                 ]);
 
@@ -218,7 +223,7 @@ class DueKeyResolverService
                         'role_name' => $userRole->role_name,
 
                         'filled' => $value !== null,
-                        'value' => $value,
+                        'value' => $this->serializeValueWithUserName($value),
                         'tags' => $key->tags,  // Add tags to the output
                     ]);
                 }
@@ -227,6 +232,18 @@ class DueKeyResolverService
         }
 
         return $out->values();
+    }
+
+    private function serializeValueWithUserName(?EnteredKeyValue $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $payload = $value->toArray();
+        $payload['user_name'] = $value->user?->name;
+
+        return $payload;
     }
 
     /**
