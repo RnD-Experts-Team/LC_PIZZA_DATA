@@ -102,20 +102,14 @@ class DueKeyResolverService
                 } else {
 
                     $roles = $rule->role_names ?? [];
+                    $valueUserIds = $existingValues->pluck('user_id')->filter()->unique();
 
-                    $users = UserStoreRole::query()
-                        ->join('users', 'users.id', '=', 'user_store_roles.user_id')
-                        ->where('user_store_roles.store_id', $storeId)
-                        ->where('user_store_roles.active', true)
-                        ->where('user_store_roles.user_id', $authUserId)
-                        ->whereIn('user_store_roles.role_name', $roles)
-                        ->select([
-                            'user_store_roles.user_id',
-                            'user_store_roles.role_name',
-                            'users.name as user_name',
-                        ])
-                        ->distinct()
-                        ->get();
+                    $users = $this->resolveUsersForRule(
+                        $storeId,
+                        $roles,
+                        (int) $authUserId,
+                        $valueUserIds
+                    );
 
                     foreach ($users as $userRole) {
 
@@ -186,20 +180,14 @@ class DueKeyResolverService
             } else {
 
                 $roles = $rule->role_names ?? [];
+                $valueUserIds = $existingValues->pluck('user_id')->filter()->unique();
 
-                $users = UserStoreRole::query()
-                    ->join('users', 'users.id', '=', 'user_store_roles.user_id')
-                    ->where('user_store_roles.store_id', $storeId)
-                    ->where('user_store_roles.active', true)
-                    ->where('user_store_roles.user_id', $authUserId)
-                    ->whereIn('user_store_roles.role_name', $roles)
-                    ->select([
-                        'user_store_roles.user_id',
-                        'user_store_roles.role_name',
-                        'users.name as user_name',
-                    ])
-                    ->distinct()
-                    ->get();
+                $users = $this->resolveUsersForRule(
+                    $storeId,
+                    $roles,
+                    (int) $authUserId,
+                    $valueUserIds
+                );
 
                 foreach ($users as $userRole) {
 
@@ -244,6 +232,38 @@ class DueKeyResolverService
         $payload['user_name'] = $value->user?->name;
 
         return $payload;
+    }
+
+    private function resolveUsersForRule(
+        string $storeId,
+        array $roles,
+        int $authUserId,
+        Collection $valueUserIds
+    ): Collection {
+        $baseQuery = UserStoreRole::query()
+            ->join('users', 'users.id', '=', 'user_store_roles.user_id')
+            ->where('user_store_roles.store_id', $storeId)
+            ->where('user_store_roles.active', true)
+            ->whereIn('user_store_roles.role_name', $roles)
+            ->select([
+                'user_store_roles.user_id',
+                'user_store_roles.role_name',
+                'users.name as user_name',
+            ])
+            ->distinct();
+
+        $authUsers = $authUserId
+            ? (clone $baseQuery)->where('user_store_roles.user_id', $authUserId)->get()
+            : collect();
+
+        $filledUsers = $valueUserIds->isNotEmpty()
+            ? (clone $baseQuery)->whereIn('user_store_roles.user_id', $valueUserIds->all())->get()
+            : collect();
+
+        return $authUsers
+            ->merge($filledUsers)
+            ->unique('user_id')
+            ->values();
     }
 
     /**
