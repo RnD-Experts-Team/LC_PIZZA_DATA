@@ -7,13 +7,13 @@ use App\Models\KeyStoreRule;
 use Carbon\Carbon;
 use App\Services\DataEntry\ScheduleEvaluationService;
 
-class GenerateSchedule extends Command
+class DailyStoreKeySchedule extends Command
 {
-    protected $signature = 'schedule:generate
-                            {--from= : Start date in Y-m-d format}
-                            {--to= : End date in Y-m-d format}';
+    protected $signature = 'schedule:store-keys
+                            {--from= : Start date (Y-m-d)}
+                            {--to= : End date (Y-m-d)}';
 
-    protected $description = 'Generate daily schedule for stores based on KeyStoreRule logic';
+    protected $description = 'Generate a daily schedule for each store showing keys and roles due';
 
     public function handle()
     {
@@ -21,42 +21,46 @@ class GenerateSchedule extends Command
         $to = Carbon::parse($this->option('to') ?? '2026-06-30')->endOfDay();
 
         $service = new ScheduleEvaluationService();
+        $rules = KeyStoreRule::all();
 
-        $rules = KeyStoreRule::with('store')->get(); // assumes KeyStoreRule has a store relation
+        // Get distinct store_ids
+        $storeIds = $rules->pluck('store_id')->unique();
 
         $current = $from->copy();
-        $output = [];
+        $rows = [];
 
         while ($current->lte($to)) {
-            foreach ($rules as $rule) {
-                if ($service->isDueOnDate($rule, $current)) {
-                    $storeName = $rule->store->name ?? 'Unknown Store';
-                    $output[] = [
-                        'date' => $current->toDateString(),
-                        'store' => $storeName,
-                        'rule_id' => $rule->id,
-                        'rule_description' => $rule->description ?? null,
-                    ];
-                }
+            foreach ($storeIds as $storeId) {
+                $dueRules = $rules->filter(function ($rule) use ($service, $current, $storeId) {
+                    return $rule->store_id === $storeId && $service->isDueOnDate($rule, $current);
+                });
+
+                $keyIds = $dueRules->pluck('key_id')->implode(', ');
+                $roles = $dueRules->pluck('role_names')
+                    ->filter()
+                    ->flatten()
+                    ->unique()
+                    ->implode(', ');
+
+                $rows[] = [
+                    'date' => $current->toDateString(),
+                    'store_id' => $storeId,
+                    'key_ids' => $keyIds,
+                    'roles' => $roles,
+                ];
             }
             $current->addDay();
         }
 
-        // Display as table in console
-        $this->table(
-            ['Date', 'Store', 'Rule ID', 'Description'],
-            $output
-        );
-
-        // Optional: save to CSV for reporting
-        $fileName = storage_path('schedule_due_may_june.csv');
-        $fp = fopen($fileName, 'w');
-        fputcsv($fp, ['Date', 'Store', 'Rule ID', 'Description']);
-        foreach ($output as $row) {
+        // Save CSV
+        $filePath = storage_path('daily_store_key_schedule.csv');
+        $fp = fopen($filePath, 'w');
+        fputcsv($fp, ['Date', 'Store ID', 'Key IDs', 'Roles']);
+        foreach ($rows as $row) {
             fputcsv($fp, $row);
         }
         fclose($fp);
 
-        $this->info("Schedule CSV saved to: $fileName");
+        $this->info("Daily store key schedule generated: $filePath");
     }
 }
