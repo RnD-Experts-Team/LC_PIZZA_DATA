@@ -13,7 +13,7 @@ class DailyStoreKeySchedule extends Command
                             {--from= : Start date (Y-m-d)}
                             {--to= : End date (Y-m-d)}';
 
-    protected $description = 'Generate a daily schedule for each store showing keys and roles due';
+    protected $description = 'Generate a daily schedule for each store showing keys (labels) and roles due';
 
     public function handle()
     {
@@ -21,9 +21,11 @@ class DailyStoreKeySchedule extends Command
         $to = Carbon::parse($this->option('to') ?? '2026-06-30')->endOfDay();
 
         $service = new ScheduleEvaluationService();
-        $rules = KeyStoreRule::all();
 
-        // Get distinct store_ids
+        // Load all rules with key relationship for labels
+        $rules = KeyStoreRule::with('key')->get();
+
+        // Distinct store IDs
         $storeIds = $rules->pluck('store_id')->unique();
 
         $current = $from->copy();
@@ -35,7 +37,13 @@ class DailyStoreKeySchedule extends Command
                     return $rule->store_id === $storeId && $service->isDueOnDate($rule, $current);
                 });
 
-                $keyIds = $dueRules->pluck('key_id')->implode(', ');
+                // Collect key labels
+                $keyLabels = $dueRules->pluck('key.label')
+                    ->filter() // ignore nulls
+                    ->unique()
+                    ->implode(', ');
+
+                // Collect roles
                 $roles = $dueRules->pluck('role_names')
                     ->filter()
                     ->flatten()
@@ -45,7 +53,7 @@ class DailyStoreKeySchedule extends Command
                 $rows[] = [
                     'date' => $current->toDateString(),
                     'store_id' => $storeId,
-                    'key_ids' => $keyIds,
+                    'keys' => $keyLabels,
                     'roles' => $roles,
                 ];
             }
@@ -55,7 +63,7 @@ class DailyStoreKeySchedule extends Command
         // Save CSV
         $filePath = storage_path('daily_store_key_schedule.csv');
         $fp = fopen($filePath, 'w');
-        fputcsv($fp, ['Date', 'Store ID', 'Key IDs', 'Roles']);
+        fputcsv($fp, ['Date', 'Store ID', 'Keys', 'Roles']);
         foreach ($rows as $row) {
             fputcsv($fp, $row);
         }
