@@ -181,11 +181,11 @@ class ReportsController extends Controller
                 'over_short_week_to_date' => (float) ($weekToDateTotals['over_short'] ?? 0),
 
                 'refunded_orders' => [
-                    'count' => (int) ($daily->refund_orders ?? 0),
+                    'count' => (int) ($daily->refunded_orders ?? 0),
                     'sales' => (float) ($daily->refund_amount ?? 0),
                 ],
                 'refunded_orders_week_to_date' => [
-                    'count' => (int) ($weekToDateTotals['refund_orders'] ?? 0),
+                    'count' => (int) ($weekToDateTotals['refunded_orders'] ?? 0),
                     'sales' => (float) ($weekToDateTotals['refund_amount'] ?? 0),
                 ],
 
@@ -305,7 +305,7 @@ class ReportsController extends Controller
             ->selectRaw(
                 'COALESCE(SUM(cash_sales), 0) as cash_sales,'
                 . ' COALESCE(SUM(over_short), 0) as over_short,'
-                . ' COALESCE(SUM(refund_orders), 0) as refund_orders,'
+                . ' COALESCE(SUM(refunded_orders), 0) as refunded_orders,'
                 . ' COALESCE(SUM(refund_amount), 0) as refund_amount,'
                 . ' COALESCE(SUM(customer_count), 0) as customer_count,'
                 . ' COALESCE(SUM(hnr_transactions), 0) as hnr_transactions,'
@@ -316,7 +316,7 @@ class ReportsController extends Controller
         return [
             'cash_sales' => (float) ($totals->cash_sales ?? 0),
             'over_short' => (float) ($totals->over_short ?? 0),
-            'refund_orders' => (int) ($totals->refund_orders ?? 0),
+            'refunded_orders' => (int) ($totals->refunded_orders ?? 0),
             'refund_amount' => (float) ($totals->refund_amount ?? 0),
             'customer_count' => (int) ($totals->customer_count ?? 0),
             'hnr_transactions' => (int) ($totals->hnr_transactions ?? 0),
