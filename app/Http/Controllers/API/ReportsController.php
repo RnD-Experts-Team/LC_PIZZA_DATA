@@ -66,9 +66,17 @@ class ReportsController extends Controller
         // Same business week last year (Tue–Mon)
         $lastYearWeekStart = $weekStart->subWeeks(52);
         $lastYearWeekEnd = $weekEnd->subWeeks(52);
+
+        $weekToDateStart = $weekStart;
+        $weekToDateEnd = $day;
         $daily = $this->dailySummary($store, $day);
 
         $hourlySalesByChannel = $this->hourlySalesByChannel($store, $day);
+        $hourlySalesWeekToDateAvg = $this->hourlySalesByChannelAverage($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateTotals = $this->dailySummaryTotals($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateSalesTotals = $this->totalSalesByChannelForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5);
+        $weekToDatePortal = $this->portalMetricsForRange($store, $weekToDateStart, $weekToDateEnd);
 
         $totalSales = [
             'royalty_obligation' => 0,
@@ -130,10 +138,14 @@ class ReportsController extends Controller
                 'this_week_by_day' => $this->salesByDay($store, $weekStart, $weekEnd),
                 'previous_week_by_day' => $this->salesByDay($store, $prevWeekStart, $prevWeekEnd),
                 'same_week_last_year_by_day' => $this->salesByDay($store, $lastYearWeekStart, $lastYearWeekEnd),
+                'this_week_total' => $this->salesTotal($store, $weekStart, $weekEnd),
+                'previous_week_total' => $this->salesTotal($store, $prevWeekStart, $prevWeekEnd),
+                'same_week_last_year_total' => $this->salesTotal($store, $lastYearWeekStart, $lastYearWeekEnd),
             ],
 
             'top' => [
                 'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5),
+                'top_5_items_sales_week_to_date' => $weekToDateTopItems,
 
                 'ingredients' => [
                     'top_3_ingredients_used' => $this->topIngredientsForDay($store, $day),
@@ -146,6 +158,7 @@ class ReportsController extends Controller
 
             'day' => [
                 'hourly_sales_and_channels' => $hourlySalesByChannel,
+                'hourly_sales_and_channels_week_to_date_avg' => $hourlySalesWeekToDateAvg,
                 'total_sales' => [
                     'royalty_obligation' => round($adjustedTotalSales, 2),
                     'phone_sales' => round($totalSales['phone_sales'], 2),
@@ -157,25 +170,43 @@ class ReportsController extends Controller
                     'ubereats_sales' => round($totalSales['ubereats_sales'], 2),
                     'grubhub_sales' => round($totalSales['grubhub_sales'], 2),
                 ],
+                'total_sales_week_to_date' => $weekToDateSalesTotals,
 
                 'total_cash_sales' => (float) ($daily->cash_sales ?? 0),
+                'total_cash_sales_week_to_date' => (float) ($weekToDateTotals['cash_sales'] ?? 0),
                 'total_deposit' => $this->totalDepositForDay($store, $day),
+                'total_deposit_week_to_date' => $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd),
 
                 'over_short' => (float) ($daily->over_short ?? 0),
+                'over_short_week_to_date' => (float) ($weekToDateTotals['over_short'] ?? 0),
 
                 'refunded_orders' => [
                     'count' => (int) ($daily->refund_orders ?? 0),
                     'sales' => (float) ($daily->refund_amount ?? 0),
                 ],
+                'refunded_orders_week_to_date' => [
+                    'count' => (int) ($weekToDateTotals['refund_orders'] ?? 0),
+                    'sales' => (float) ($weekToDateTotals['refund_amount'] ?? 0),
+                ],
 
                 'customer_count' => (int) ($daily->customer_count ?? 0),
+                'customer_count_week_to_date' => (int) ($weekToDateTotals['customer_count'] ?? 0),
 
                 'waste' => [
                     'alta_inventory' => $this->altaInventoryWasteForDay($store, $day),
                     'normal' => $this->normalWasteForDay($store, $day),
                 ],
+                'waste_week_to_date' => [
+                    'alta_inventory' => $this->altaInventoryWasteForRange($store, $weekToDateStart, $weekToDateEnd),
+                    'normal' => $this->normalWasteForRange($store, $weekToDateStart, $weekToDateEnd),
+                ],
 
                 'total_tips' => $this->summaryQuery->getTotalTips($store, $day->toMutable(), $day->toMutable()),
+                'total_tips_week_to_date' => $this->summaryQuery->getTotalTips(
+                    $store,
+                    $weekToDateStart->toMutable(),
+                    $weekToDateEnd->toMutable()
+                ),
 
                 'hnr' => [
                     'hnr_transactions' => (int) ($daily->hnr_transactions ?? 0),
@@ -186,10 +217,14 @@ class ReportsController extends Controller
                             (int) ($daily->hnr_transactions ?? 0)) * 100, 2)
                         : 0.0,
                 ],
+                'hnr_week_to_date' => $this->hnrTotals($weekToDateTotals),
 
                 'labor' => 0,
+                'labor_week_to_date' => 0,
 
-                'portal' => $this->portalMetrics($store, $day),
+                'portal' => array_merge($this->portalMetrics($store, $day), [
+                    'week_to_date' => $weekToDatePortal,
+                ]),
             ],
         ];
     }
@@ -254,15 +289,75 @@ class ReportsController extends Controller
         return $out;
     }
 
+    private function salesTotal(string $store, CarbonImmutable $start, CarbonImmutable $end): float
+    {
+        return (float) $this->summaryQuery->getSales(
+            $store,
+            $start->toMutable(),
+            $end->toMutable()
+        );
+    }
+
+    private function dailySummaryTotals(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $totals = DailyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COALESCE(SUM(cash_sales), 0) as cash_sales,'
+                . ' COALESCE(SUM(over_short), 0) as over_short,'
+                . ' COALESCE(SUM(refund_orders), 0) as refund_orders,'
+                . ' COALESCE(SUM(refund_amount), 0) as refund_amount,'
+                . ' COALESCE(SUM(customer_count), 0) as customer_count,'
+                . ' COALESCE(SUM(hnr_transactions), 0) as hnr_transactions,'
+                . ' COALESCE(SUM(hnr_broken_promises), 0) as hnr_broken_promises'
+            )
+            ->first();
+
+        return [
+            'cash_sales' => (float) ($totals->cash_sales ?? 0),
+            'over_short' => (float) ($totals->over_short ?? 0),
+            'refund_orders' => (int) ($totals->refund_orders ?? 0),
+            'refund_amount' => (float) ($totals->refund_amount ?? 0),
+            'customer_count' => (int) ($totals->customer_count ?? 0),
+            'hnr_transactions' => (int) ($totals->hnr_transactions ?? 0),
+            'hnr_broken_promises' => (int) ($totals->hnr_broken_promises ?? 0),
+        ];
+    }
+
+    private function hnrTotals(array $totals): array
+    {
+        $transactions = (int) ($totals['hnr_transactions'] ?? 0);
+        $broken = (int) ($totals['hnr_broken_promises'] ?? 0);
+        $promiseMet = $transactions - $broken;
+
+        return [
+            'hnr_transactions' => $transactions,
+            'hnr_broken_promises' => $broken,
+            'hnr_promise_met' => $promiseMet,
+            'hnr_promise_met_percent' => $transactions > 0
+                ? round(($promiseMet / $transactions) * 100, 2)
+                : 0.0,
+        ];
+    }
+
     // ---------------------------------------------------------------------
     // Top Items
     // ---------------------------------------------------------------------
 
     private function topItemsForDay(string $store, CarbonImmutable $day, int $limit): array
     {
+        return $this->topItemsForRange($store, $day, $day, $limit);
+    }
+
+    private function topItemsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end,
+        int $limit
+    ): array {
         $result = $this->intelligentAgg->fetchAggregatedData([
-            'start_date' => $day->toDateString(),
-            'end_date' => $day->toDateString(),
+            'start_date' => $start->toDateString(),
+            'end_date' => $end->toDateString(),
             'summary_type' => 'item',
             'metrics' => [
                 ['field' => 'gross_sales', 'agg' => 'SUM', 'alias' => 'gross_sales'],
@@ -431,16 +526,125 @@ class ReportsController extends Controller
             ->toArray();
     }
 
+    private function hourlySalesByChannelAverage(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        return HourlyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'hour,'
+                . ' AVG(royalty_obligation) as royalty_obligation,'
+                . ' AVG(phone_sales) as phone_sales,'
+                . ' AVG(call_center_sales) as call_center_sales,'
+                . ' AVG(drive_thru_sales) as drive_thru_sales,'
+                . ' AVG(website_sales) as website_sales,'
+                . ' AVG(mobile_sales) as mobile_sales,'
+                . ' AVG(doordash_sales) as doordash_sales,'
+                . ' AVG(ubereats_sales) as ubereats_sales,'
+                . ' AVG(grubhub_sales) as grubhub_sales'
+            )
+            ->groupBy('hour')
+            ->orderBy('hour')
+            ->get()
+            ->map(static function ($row) {
+                $royalty = (float) $row->royalty_obligation;
+                $phone = (float) $row->phone_sales;
+                $callCenter = (float) $row->call_center_sales;
+                $driveThru = (float) $row->drive_thru_sales;
+                $website = (float) $row->website_sales;
+                $mobile = (float) $row->mobile_sales;
+                $doordash = (float) $row->doordash_sales;
+                $ubereats = (float) $row->ubereats_sales;
+                $grubhub = (float) $row->grubhub_sales;
+
+                $adjusted = $royalty - (
+                    $phone + $callCenter + $driveThru + $website + $mobile + $doordash + $ubereats + $grubhub
+                );
+
+                return [
+                    'hour' => (int) $row->hour,
+                    'royalty_obligation' => round($royalty, 2),
+                    'phone_sales' => round($phone, 2),
+                    'call_center_sales' => round($callCenter, 2),
+                    'drive_thru_sales' => round($driveThru, 2),
+                    'website_sales' => round($website, 2),
+                    'mobile_sales' => round($mobile, 2),
+                    'doordash_sales' => round($doordash, 2),
+                    'ubereats_sales' => round($ubereats, 2),
+                    'grubhub_sales' => round($grubhub, 2),
+                    'adjusted_royalty_obligation' => round($adjusted, 2),
+                ];
+            })
+            ->toArray();
+    }
+
+    private function totalSalesByChannelForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $totals = HourlyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COALESCE(SUM(royalty_obligation), 0) as royalty_obligation,'
+                . ' COALESCE(SUM(phone_sales), 0) as phone_sales,'
+                . ' COALESCE(SUM(call_center_sales), 0) as call_center_sales,'
+                . ' COALESCE(SUM(drive_thru_sales), 0) as drive_thru_sales,'
+                . ' COALESCE(SUM(website_sales), 0) as website_sales,'
+                . ' COALESCE(SUM(mobile_sales), 0) as mobile_sales,'
+                . ' COALESCE(SUM(doordash_sales), 0) as doordash_sales,'
+                . ' COALESCE(SUM(ubereats_sales), 0) as ubereats_sales,'
+                . ' COALESCE(SUM(grubhub_sales), 0) as grubhub_sales'
+            )
+            ->first();
+
+        $royalty = (float) ($totals->royalty_obligation ?? 0);
+        $phone = (float) ($totals->phone_sales ?? 0);
+        $callCenter = (float) ($totals->call_center_sales ?? 0);
+        $driveThru = (float) ($totals->drive_thru_sales ?? 0);
+        $website = (float) ($totals->website_sales ?? 0);
+        $mobile = (float) ($totals->mobile_sales ?? 0);
+        $doordash = (float) ($totals->doordash_sales ?? 0);
+        $ubereats = (float) ($totals->ubereats_sales ?? 0);
+        $grubhub = (float) ($totals->grubhub_sales ?? 0);
+
+        $adjusted = $royalty - (
+            $phone + $callCenter + $driveThru + $website + $mobile + $doordash + $ubereats + $grubhub
+        );
+
+        return [
+            'royalty_obligation' => round($adjusted, 2),
+            'phone_sales' => round($phone, 2),
+            'call_center_sales' => round($callCenter, 2),
+            'drive_thru_sales' => round($driveThru, 2),
+            'website_sales' => round($website, 2),
+            'mobile_sales' => round($mobile, 2),
+            'doordash_sales' => round($doordash, 2),
+            'ubereats_sales' => round($ubereats, 2),
+            'grubhub_sales' => round($grubhub, 2),
+        ];
+    }
+
     // ---------------------------------------------------------------------
     // Deposit
     // ---------------------------------------------------------------------
 
     private function totalDepositForDay(string $store, CarbonImmutable $day): float
     {
+        return $this->totalDepositForRange($store, $day, $day);
+    }
+
+    private function totalDepositForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
         $queries = DatabaseRouter::routedQueries(
             'financial_views',
-            $day->toMutable(),
-            $day->toMutable()
+            $start->toMutable(),
+            $end->toMutable()
         );
 
         $union = array_shift($queries);
@@ -461,10 +665,23 @@ class ReportsController extends Controller
 
     private function altaInventoryWasteForDay(string $store, CarbonImmutable $day): float
     {
+        return $this->altaInventoryWasteForRange($store, $day, $day);
+    }
+
+    private function normalWasteForDay(string $store, CarbonImmutable $day): float
+    {
+        return $this->normalWasteForRange($store, $day, $day);
+    }
+
+    private function altaInventoryWasteForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
         $queries = DatabaseRouter::routedQueries(
             'alta_inventory_waste',
-            $day->toMutable(),
-            $day->toMutable()
+            $start->toMutable(),
+            $end->toMutable()
         );
 
         $union = array_shift($queries);
@@ -479,12 +696,15 @@ class ReportsController extends Controller
             ->value('total_waste_cost') ?? 0.0;
     }
 
-    private function normalWasteForDay(string $store, CarbonImmutable $day): float
-    {
+    private function normalWasteForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
         $queries = DatabaseRouter::routedQueries(
             'waste',
-            $day->toMutable(),
-            $day->toMutable()
+            $start->toMutable(),
+            $end->toMutable()
         );
 
         $union = array_shift($queries);
@@ -506,9 +726,29 @@ class ReportsController extends Controller
 
     private function portalMetrics(string $store, CarbonImmutable $day): array
     {
-        $eligible = $this->summaryQuery->getPortalEligibleOrders($store, $day->toMutable(), $day->toMutable());
-        $used = $this->summaryQuery->getPortalUsedOrders($store, $day->toMutable(), $day->toMutable());
-        $onTime = $this->summaryQuery->getPortalOnTimeOrders($store, $day->toMutable(), $day->toMutable());
+        return $this->portalMetricsForRange($store, $day, $day);
+    }
+
+    private function portalMetricsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $eligible = $this->summaryQuery->getPortalEligibleOrders(
+            $store,
+            $start->toMutable(),
+            $end->toMutable()
+        );
+        $used = $this->summaryQuery->getPortalUsedOrders(
+            $store,
+            $start->toMutable(),
+            $end->toMutable()
+        );
+        $onTime = $this->summaryQuery->getPortalOnTimeOrders(
+            $store,
+            $start->toMutable(),
+            $end->toMutable()
+        );
 
         return [
             'portal_eligible_orders' => $eligible,
