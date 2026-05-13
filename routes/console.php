@@ -216,6 +216,7 @@ Schedule::command('validation:check-data')
 // MAINTENANCE SCHEDULES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
+ 
 Schedule::call(function () {
     $logPath = storage_path('logs');
     $files = glob("{$logPath}/*.log");
@@ -239,3 +240,12 @@ Schedule::command('uploads:cleanup-temp')
     ->onOneServer()
     ->appendOutputTo(storage_path('logs/cleanup-temp-uploads.log'))
     ->name('cleanup-temp-uploads');
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// KEY DUE NOTIFICATIONS
+Schedule::command('keys:send-due-notifications')
+->everyMinute()
+->timezone('America/New_York')
+->withoutOverlapping()
+->onOneServer()
+->appendOutputTo(storage_path('logs/key-due-notifications.log'))
+->name('key-due-notifications');

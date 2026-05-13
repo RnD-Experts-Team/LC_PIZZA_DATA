@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class KeyStoreRule extends Model
 {
@@ -37,5 +38,10 @@ class KeyStoreRule extends Model
     public function key(): BelongsTo
     {
         return $this->belongsTo(EnteredKey::class, 'key_id');
+    }
+
+    public function times(): HasMany
+    {
+        return $this->hasMany(KeyStoreRuleTime::class, 'key_store_rule_id');
     }
 }

@@ -45,13 +45,25 @@ class KeyController extends Controller
                 'is_active' => $payload['is_active'] ?? true,
             ]);
 
-            $key->storeRules()->createMany($payload['store_rules']);
+            foreach ($payload['store_rules'] as $rulePayload) {
+                $times = $rulePayload['times'] ?? [];
+
+                unset($rulePayload['times']);
+
+                $rule = $key->storeRules()->create($rulePayload);
+
+                foreach ($times as $time) {
+                    $rule->times()->create([
+                        'due_time' => $time . ':00',
+                    ]);
+                }
+            }
 
             if (!empty($payload['tags'])) {
                 $key->tags()->sync($payload['tags']);
             }
 
-            return $key->load(['storeRules', 'tags']);
+            return $key->load(['storeRules.times', 'tags']);
         });
 
         return response()->json($key, 201);
