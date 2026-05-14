@@ -18,13 +18,11 @@ return new class extends Migration
             $table->time('due_time');
 
             $table->timestamp('last_notified_at')->nullable();
-            $table->date('last_notified_for_date')->nullable();
 
             $table->timestamps();
 
             $table->unique(['key_store_rule_id', 'due_time']);
             $table->index('due_time');
-            $table->index('last_notified_for_date');
         });
     }
 

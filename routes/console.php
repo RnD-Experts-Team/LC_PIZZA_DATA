@@ -249,3 +249,12 @@ Schedule::command('keys:send-due-notifications')
 ->onOneServer()
 ->appendOutputTo(storage_path('logs/key-due-notifications.log'))
 ->name('key-due-notifications');
+
+// DATA OUTBOX PUBLISHER
+Schedule::command('data-outbox:publish')
+    ->everyMinute()
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->appendOutputTo(storage_path('logs/data-outbox-publish.log'))
+    ->name('data-outbox-publish');

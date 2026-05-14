@@ -39,10 +39,10 @@ class StoreKeyRequest extends FormRequest
             'store_rules.*.starts_at' => 'required|date_format:Y-m-d',
             'store_rules.*.ends_at' => 'nullable|date_format:Y-m-d',
 
+            'store_rules.*.time' => 'required|date_format:H:i',
+
             'tags' => 'nullable|array',
             'tags.*' => 'exists:tags,id',
-            'store_rules.*.times' => 'nullable|array',
-            'store_rules.*.times.*' => 'date_format:H:i',
         ];
     }
 
@@ -97,8 +97,9 @@ class StoreKeyRequest extends FormRequest
             'store_rules.*.starts_at.required' => 'Each store rule must include starts_at.',
             'store_rules.*.starts_at.date_format' => 'starts_at must be YYYY-MM-DD.',
             'store_rules.*.ends_at.date_format' => 'ends_at must be YYYY-MM-DD.',
-            'store_rules.*.times.array' => 'times must be an array.',
-            'store_rules.*.times.*.date_format' => 'Each time must be HH:mm format.',   
+
+            'store_rules.*.time.required' => 'Each store rule must include time.',
+            'store_rules.*.time.date_format' => 'time must be HH:mm format.',
         ];
     }
 }

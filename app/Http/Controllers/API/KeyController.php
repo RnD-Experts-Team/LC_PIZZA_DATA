@@ -38,7 +38,6 @@ class KeyController extends Controller
         $payload['store_rules'] = $this->normalizeStoreRules($payload['store_rules'] ?? []);
 
         $key = DB::transaction(function () use ($payload) {
-
             $key = EnteredKey::create([
                 'label' => $payload['label'],
                 'data_type' => $payload['data_type'],
@@ -46,17 +45,15 @@ class KeyController extends Controller
             ]);
 
             foreach ($payload['store_rules'] as $rulePayload) {
-                $times = $rulePayload['times'] ?? [];
+                $time = $rulePayload['time'];
 
-                unset($rulePayload['times']);
+                unset($rulePayload['time']);
 
                 $rule = $key->storeRules()->create($rulePayload);
 
-                foreach ($times as $time) {
-                    $rule->times()->create([
-                        'due_time' => $time . ':00',
-                    ]);
-                }
+                $rule->times()->create([
+                    'due_time' => strlen($time) === 5 ? $time . ':00' : $time,
+                ]);
             }
 
             if (!empty($payload['tags'])) {

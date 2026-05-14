@@ -2,13 +2,15 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\PublishDataOutboxEventJob;
+use App\Models\DataOutboxEvent;
 use App\Models\KeyStoreRuleTime;
 use App\Models\UserStoreRole;
 use App\Services\DataEntry\ScheduleEvaluationService;
-use App\Services\Nats\NatsClientFactory;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-
+ use App\Services\DataEvents\DataEventFactory;
+use App\Services\DataEvents\DataOutboxService;
 class SendDueKeyNotifications extends Command
 {
     protected $signature = 'keys:send-due-notifications';
@@ -26,8 +28,8 @@ class SendDueKeyNotifications extends Command
             ->with(['rule.key'])
             ->whereTime('due_time', $targetTime)
             ->where(function ($query) use ($today) {
-                $query->whereNull('last_notified_for_date')
-                    ->orWhereDate('last_notified_for_date', '!=', $today->toDateString());
+                $query->whereNull('last_notified_at')
+                    ->orWhereDate('last_notified_at', '!=', $today->toDateString());
             })
             ->get();
 
@@ -49,18 +51,64 @@ class SendDueKeyNotifications extends Command
             DB::transaction(function () use ($ruleTime, $rule, $today, $targetTime) {
                 $userIds = $this->getTargetUserIds($rule);
 
-                foreach ($userIds as $userId) {
-                    $this->publishNotification($rule, $today, $targetTime, (int) $userId);
+                if ($userIds->isEmpty()) {
+                    return;
                 }
+
+                $this->recordEvent($this->notificationSubject(), [
+                    'channels' => ['database'],
+
+                    'users' => $userIds->map(function ($userId) use ($rule, $today, $targetTime) {
+                        return [
+                            'id' => (int) $userId,
+                            'data' => [
+                                'type' => 'data_entry_key_due_soon',
+
+                                'title' => 'Data entry key due soon',
+                                'message' => "Key {$rule->key?->label} is due at {$targetTime}.",
+
+                                'key_id' => $rule->key_id,
+                                'key_label' => $rule->key?->label,
+
+                                'store_id' => $rule->store_id,
+                                'fill_mode' => $rule->fill_mode,
+                                'role_names' => $rule->role_names,
+
+                                'frequency_type' => $rule->frequency_type,
+                                'due_date' => $today->toDateString(),
+                                'due_time' => $targetTime,
+
+                                'notify_before_minutes' => 30,
+                            ],
+                        ];
+                    })->values()->all(),
+                ]);
 
                 $ruleTime->update([
                     'last_notified_at' => now('America/New_York'),
-                    'last_notified_for_date' => $today->toDateString(),
                 ]);
             });
         }
 
         return self::SUCCESS;
+    }
+
+    private function recordEvent(string $subject, array $data): void
+    {
+        $factory = app(DataEventFactory::class);
+        $outbox = app(DataOutboxService::class);
+
+        $envelope = $factory->make($subject, $data);
+        $row = $outbox->record($subject, $envelope);
+
+        DB::afterCommit(fn () => PublishDataOutboxEventJob::dispatch($row->id));
+    }
+
+    private function notificationSubject(): string
+    {
+        return config('nats.dev_mode')
+            ? 'notifications.testing.v1.send'
+            : 'notifications.v1.send';
     }
 
     private function getTargetUserIds($rule)
@@ -80,35 +128,5 @@ class SendDueKeyNotifications extends Command
             ->pluck('user_id')
             ->unique()
             ->values();
-    }
-
-    private function publishNotification($rule, $today, string $targetTime, int $userId): void
-    {
-        $payload = [
-            'event' => 'data_entry_key_due_soon',
-
-            'user_id' => $userId,
-
-            'key_id' => $rule->key_id,
-            'key_label' => $rule->key?->label,
-
-            'store_id' => $rule->store_id,
-            'fill_mode' => $rule->fill_mode,
-            'role_names' => $rule->role_names,
-
-            'frequency_type' => $rule->frequency_type,
-            'due_date' => $today->toDateString(),
-            'due_time' => $targetTime,
-
-            'notify_before_minutes' => 30,
-            'sent_at' => now('America/New_York')->toISOString(),
-        ];
-
-        app(NatsClientFactory::class)
-            ->make()
-            ->publish(
-                'data-entry.key.due-soon',
-                json_encode($payload)
-            );
     }
 }
