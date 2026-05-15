@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class KeyStoreRule extends Model
 {
@@ -24,6 +23,9 @@ class KeyStoreRule extends Model
         'week_day',
         'year_month',
 
+        'due_time',
+        'last_notified_at',
+
         'starts_at',
         'ends_at',
     ];
@@ -33,12 +35,11 @@ class KeyStoreRule extends Model
         'week_days' => 'array',
         'starts_at' => 'date',
         'ends_at' => 'date',
+        'last_notified_at' => 'datetime',
     ];
 
     public function key(): BelongsTo
     {
         return $this->belongsTo(EnteredKey::class, 'key_id');
     }
-
-    
 }
