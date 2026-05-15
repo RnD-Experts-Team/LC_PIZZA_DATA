@@ -3,14 +3,14 @@
 namespace App\Console\Commands;
 
 use App\Jobs\PublishDataOutboxEventJob;
-use App\Models\DataOutboxEvent;
-use App\Models\KeyStoreRuleTime;
+use App\Models\KeyStoreRule;
 use App\Models\UserStoreRole;
 use App\Services\DataEntry\ScheduleEvaluationService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
- use App\Services\DataEvents\DataEventFactory;
+use App\Services\DataEvents\DataEventFactory;
 use App\Services\DataEvents\DataOutboxService;
+
 class SendDueKeyNotifications extends Command
 {
     protected $signature = 'keys:send-due-notifications';
@@ -24,8 +24,8 @@ class SendDueKeyNotifications extends Command
 
         $targetTime = $now->copy()->addMinutes(30)->format('H:i:00');
 
-        $ruleTimes = KeyStoreRuleTime::query()
-            ->with(['rule.key'])
+        $rules = KeyStoreRule::query()
+            ->with('key')
             ->whereTime('due_time', $targetTime)
             ->where(function ($query) use ($today) {
                 $query->whereNull('last_notified_at')
@@ -33,10 +33,8 @@ class SendDueKeyNotifications extends Command
             })
             ->get();
 
-        foreach ($ruleTimes as $ruleTime) {
-            $rule = $ruleTime->rule;
-
-            if (!$rule || !$rule->key || !$rule->key->is_active) {
+        foreach ($rules as $rule) {
+            if (!$rule->key || !$rule->key->is_active) {
                 continue;
             }
 
@@ -48,7 +46,7 @@ class SendDueKeyNotifications extends Command
                 continue;
             }
 
-            DB::transaction(function () use ($ruleTime, $rule, $today, $targetTime) {
+            DB::transaction(function () use ($rule, $today, $targetTime) {
                 $userIds = $this->getTargetUserIds($rule);
 
                 if ($userIds->isEmpty()) {
@@ -84,7 +82,7 @@ class SendDueKeyNotifications extends Command
                     })->values()->all(),
                 ]);
 
-                $ruleTime->update([
+                $rule->update([
                     'last_notified_at' => now('America/New_York'),
                 ]);
             });

@@ -40,8 +40,5 @@ class KeyStoreRule extends Model
         return $this->belongsTo(EnteredKey::class, 'key_id');
     }
 
-    public function times(): HasMany
-    {
-        return $this->hasMany(KeyStoreRuleTime::class, 'key_store_rule_id');
-    }
+    
 }

@@ -49,18 +49,16 @@ class KeyController extends Controller
 
                 unset($rulePayload['time']);
 
-                $rule = $key->storeRules()->create($rulePayload);
+                $rulePayload['due_time'] = strlen($time) === 5 ? $time . ':00' : $time;
 
-                $rule->times()->create([
-                    'due_time' => strlen($time) === 5 ? $time . ':00' : $time,
-                ]);
+                $key->storeRules()->create($rulePayload);
             }
 
             if (!empty($payload['tags'])) {
                 $key->tags()->sync($payload['tags']);
             }
 
-            return $key->load(['storeRules.times', 'tags']);
+            return $key->load(['storeRules', 'tags']);
         });
 
         return response()->json($key, 201);
