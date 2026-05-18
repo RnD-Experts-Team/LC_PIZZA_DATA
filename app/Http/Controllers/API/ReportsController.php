@@ -69,7 +69,7 @@ class ReportsController extends Controller
 
         $weekToDateStart = $weekStart;
         $weekToDateEnd = $day;
-        $weekToDateDayCount = max(1, $weekToDateStart->diffInDays($weekToDateEnd) + 1);
+        $weekToDateDayCount = (int) max(1, $weekToDateStart->diffInDays($weekToDateEnd) + 1);
         $daily = $this->dailySummary($store, $day);
 
         $hourlySalesByChannel = $this->hourlySalesByChannel($store, $day);
