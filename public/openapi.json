@@ -335,12 +335,35 @@
                 },
                 "required": ["count", "sales"]
             },
+            "DsprLiteDayRefundedOrdersAverage": {
+                "type": "object",
+                "properties": {
+                    "count": { "type": "number" },
+                    "sales": { "type": "number" }
+                },
+                "required": ["count", "sales"]
+            },
             "DsprLiteDayHnr": {
                 "type": "object",
                 "properties": {
                     "hnr_transactions": { "type": "integer" },
                     "hnr_broken_promises": { "type": "integer" },
                     "hnr_promise_met": { "type": "integer" },
+                    "hnr_promise_met_percent": { "type": "number" }
+                },
+                "required": [
+                    "hnr_transactions",
+                    "hnr_broken_promises",
+                    "hnr_promise_met",
+                    "hnr_promise_met_percent"
+                ]
+            },
+            "DsprLiteDayHnrAverage": {
+                "type": "object",
+                "properties": {
+                    "hnr_transactions": { "type": "number" },
+                    "hnr_broken_promises": { "type": "number" },
+                    "hnr_promise_met": { "type": "number" },
                     "hnr_promise_met_percent": { "type": "number" }
                 },
                 "required": [
@@ -375,6 +398,23 @@
                     "in_portal_on_time_percent"
                 ]
             },
+            "DsprLitePortalMetricsAverage": {
+                "type": "object",
+                "properties": {
+                    "portal_eligible_orders": { "type": "number" },
+                    "portal_used_orders": { "type": "number" },
+                    "portal_on_time_orders": { "type": "number" },
+                    "put_into_portal_percent": { "type": "number" },
+                    "in_portal_on_time_percent": { "type": "number" }
+                },
+                "required": [
+                    "portal_eligible_orders",
+                    "portal_used_orders",
+                    "portal_on_time_orders",
+                    "put_into_portal_percent",
+                    "in_portal_on_time_percent"
+                ]
+            },
             "DsprLiteDayPortal": {
                 "type": "object",
                 "properties": {
@@ -385,6 +425,9 @@
                     "in_portal_on_time_percent": { "type": "number" },
                     "week_to_date": {
                         "$ref": "#/components/schemas/DsprLitePortalMetrics"
+                    },
+                    "week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLitePortalMetricsAverage"
                     }
                 },
                 "required": [
@@ -393,7 +436,8 @@
                     "portal_on_time_orders",
                     "put_into_portal_percent",
                     "in_portal_on_time_percent",
-                    "week_to_date"
+                    "week_to_date",
+                    "week_to_date_avg"
                 ]
             },
             "DsprLiteDayTotals": {
@@ -403,6 +447,9 @@
                         "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
                     },
                     "hourly_sales_and_channels_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
+                    },
+                    "hourly_sales_and_channels_week_to_date_sum": {
                         "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
                     },
                     "total_sales": {
@@ -455,38 +502,78 @@
                             "grubhub_sales"
                         ]
                     },
+                    "total_sales_week_to_date_avg": {
+                        "type": "object",
+                        "properties": {
+                            "royalty_obligation": { "type": "number" },
+                            "phone_sales": { "type": "number" },
+                            "call_center_sales": { "type": "number" },
+                            "drive_thru_sales": { "type": "number" },
+                            "website_sales": { "type": "number" },
+                            "mobile_sales": { "type": "number" },
+                            "doordash_sales": { "type": "number" },
+                            "ubereats_sales": { "type": "number" },
+                            "grubhub_sales": { "type": "number" }
+                        },
+                        "required": [
+                            "royalty_obligation",
+                            "phone_sales",
+                            "call_center_sales",
+                            "drive_thru_sales",
+                            "website_sales",
+                            "mobile_sales",
+                            "doordash_sales",
+                            "ubereats_sales",
+                            "grubhub_sales"
+                        ]
+                    },
                     "total_royalty_obligation": { "type": "number" },
                     "total_net_sales": { "type": "number" },
                     "total_gross_sales": { "type": "number" },
                     "total_digital_sales": { "type": "number" },
                     "total_cash_sales": { "type": "number" },
                     "total_cash_sales_week_to_date": { "type": "number" },
+                    "total_cash_sales_week_to_date_avg": { "type": "number" },
                     "total_deposit": { "type": "number" },
                     "total_deposit_week_to_date": { "type": "number" },
+                    "total_deposit_week_to_date_avg": { "type": "number" },
                     "over_short": { "type": "number" },
                     "over_short_week_to_date": { "type": "number" },
+                    "over_short_week_to_date_avg": { "type": "number" },
                     "refunded_orders": {
                         "$ref": "#/components/schemas/DsprLiteDayRefundedOrders"
                     },
                     "refunded_orders_week_to_date": {
                         "$ref": "#/components/schemas/DsprLiteDayRefundedOrders"
                     },
+                    "refunded_orders_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayRefundedOrdersAverage"
+                    },
                     "customer_count": { "type": "integer" },
                     "customer_count_week_to_date": { "type": "integer" },
+                    "customer_count_week_to_date_avg": { "type": "number" },
                     "waste": {
                         "$ref": "#/components/schemas/DsprLiteDayWaste"
                     },
                     "waste_week_to_date": {
                         "$ref": "#/components/schemas/DsprLiteDayWaste"
                     },
+                    "waste_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayWaste"
+                    },
                     "total_tips": { "type": "number" },
                     "total_tips_week_to_date": { "type": "number" },
+                    "total_tips_week_to_date_avg": { "type": "number" },
                     "hnr": { "$ref": "#/components/schemas/DsprLiteDayHnr" },
                     "hnr_week_to_date": {
                         "$ref": "#/components/schemas/DsprLiteDayHnr"
                     },
+                    "hnr_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayHnrAverage"
+                    },
                     "labor": { "type": "number" },
                     "labor_week_to_date": { "type": "number" },
+                    "labor_week_to_date_avg": { "type": "number" },
                     "portal": {
                         "$ref": "#/components/schemas/DsprLiteDayPortal"
                     }
@@ -494,30 +581,41 @@
                 "required": [
                     "hourly_sales_and_channels",
                     "hourly_sales_and_channels_week_to_date_avg",
+                    "hourly_sales_and_channels_week_to_date_sum",
                     "total_sales",
                     "total_sales_week_to_date",
+                    "total_sales_week_to_date_avg",
                     "total_royalty_obligation",
                     "total_net_sales",
                     "total_gross_sales",
                     "total_digital_sales",
                     "total_cash_sales",
                     "total_cash_sales_week_to_date",
+                    "total_cash_sales_week_to_date_avg",
                     "total_deposit",
                     "total_deposit_week_to_date",
+                    "total_deposit_week_to_date_avg",
                     "over_short",
                     "over_short_week_to_date",
+                    "over_short_week_to_date_avg",
                     "refunded_orders",
                     "refunded_orders_week_to_date",
+                    "refunded_orders_week_to_date_avg",
                     "customer_count",
                     "customer_count_week_to_date",
+                    "customer_count_week_to_date_avg",
                     "waste",
                     "waste_week_to_date",
+                    "waste_week_to_date_avg",
                     "total_tips",
                     "total_tips_week_to_date",
+                    "total_tips_week_to_date_avg",
                     "hnr",
                     "hnr_week_to_date",
+                    "hnr_week_to_date_avg",
                     "labor",
                     "labor_week_to_date",
+                    "labor_week_to_date_avg",
                     "portal"
                 ]
             },

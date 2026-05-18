@@ -69,14 +69,27 @@ class ReportsController extends Controller
 
         $weekToDateStart = $weekStart;
         $weekToDateEnd = $day;
+        $weekToDateDayCount = max(1, $weekToDateStart->diffInDays($weekToDateEnd) + 1);
         $daily = $this->dailySummary($store, $day);
 
         $hourlySalesByChannel = $this->hourlySalesByChannel($store, $day);
         $hourlySalesWeekToDateAvg = $this->hourlySalesByChannelAverage($store, $weekToDateStart, $weekToDateEnd);
+        $hourlySalesWeekToDateSum = $this->hourlySalesByChannelSum($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateTotals = $this->dailySummaryTotals($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateTotalsAvg = $this->averageWeekToDateTotals($weekToDateTotals, $weekToDateDayCount);
         $weekToDateSalesTotals = $this->totalSalesByChannelForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateSalesTotalsAvg = $this->averageSalesByChannelTotals($weekToDateSalesTotals, $weekToDateDayCount);
         $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5);
         $weekToDatePortal = $this->portalMetricsForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDatePortalAvg = $this->portalMetricsAverage($weekToDatePortal, $weekToDateDayCount);
+        $weekToDateDeposit = $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateWasteAlta = $this->altaInventoryWasteForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateWasteNormal = $this->normalWasteForRange($store, $weekToDateStart, $weekToDateEnd);
+        $weekToDateTips = $this->summaryQuery->getTotalTips(
+            $store,
+            $weekToDateStart->toMutable(),
+            $weekToDateEnd->toMutable()
+        );
 
         $totalSales = [
             'royalty_obligation' => 0,
@@ -159,6 +172,7 @@ class ReportsController extends Controller
             'day' => [
                 'hourly_sales_and_channels' => $hourlySalesByChannel,
                 'hourly_sales_and_channels_week_to_date_avg' => $hourlySalesWeekToDateAvg,
+                'hourly_sales_and_channels_week_to_date_sum' => $hourlySalesWeekToDateSum,
                 'total_sales' => [
                     'royalty_obligation' => round($adjustedTotalSales, 2),
                     'phone_sales' => round($totalSales['phone_sales'], 2),
@@ -171,14 +185,18 @@ class ReportsController extends Controller
                     'grubhub_sales' => round($totalSales['grubhub_sales'], 2),
                 ],
                 'total_sales_week_to_date' => $weekToDateSalesTotals,
+                'total_sales_week_to_date_avg' => $weekToDateSalesTotalsAvg,
 
                 'total_cash_sales' => (float) ($daily->cash_sales ?? 0),
                 'total_cash_sales_week_to_date' => (float) ($weekToDateTotals['cash_sales'] ?? 0),
+                'total_cash_sales_week_to_date_avg' => (float) ($weekToDateTotalsAvg['cash_sales'] ?? 0),
                 'total_deposit' => $this->totalDepositForDay($store, $day),
-                'total_deposit_week_to_date' => $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd),
+                'total_deposit_week_to_date' => $weekToDateDeposit,
+                'total_deposit_week_to_date_avg' => $this->averageValue($weekToDateDeposit, $weekToDateDayCount),
 
                 'over_short' => (float) ($daily->over_short ?? 0),
                 'over_short_week_to_date' => (float) ($weekToDateTotals['over_short'] ?? 0),
+                'over_short_week_to_date_avg' => (float) ($weekToDateTotalsAvg['over_short'] ?? 0),
 
                 'refunded_orders' => [
                     'count' => (int) ($daily->refunded_orders ?? 0),
@@ -188,25 +206,31 @@ class ReportsController extends Controller
                     'count' => (int) ($weekToDateTotals['refunded_orders'] ?? 0),
                     'sales' => (float) ($weekToDateTotals['refund_amount'] ?? 0),
                 ],
+                'refunded_orders_week_to_date_avg' => [
+                    'count' => (float) ($weekToDateTotalsAvg['refunded_orders'] ?? 0),
+                    'sales' => (float) ($weekToDateTotalsAvg['refund_amount'] ?? 0),
+                ],
 
                 'customer_count' => (int) ($daily->customer_count ?? 0),
                 'customer_count_week_to_date' => (int) ($weekToDateTotals['customer_count'] ?? 0),
+                'customer_count_week_to_date_avg' => (float) ($weekToDateTotalsAvg['customer_count'] ?? 0),
 
                 'waste' => [
                     'alta_inventory' => $this->altaInventoryWasteForDay($store, $day),
                     'normal' => $this->normalWasteForDay($store, $day),
                 ],
                 'waste_week_to_date' => [
-                    'alta_inventory' => $this->altaInventoryWasteForRange($store, $weekToDateStart, $weekToDateEnd),
-                    'normal' => $this->normalWasteForRange($store, $weekToDateStart, $weekToDateEnd),
+                    'alta_inventory' => $weekToDateWasteAlta,
+                    'normal' => $weekToDateWasteNormal,
+                ],
+                'waste_week_to_date_avg' => [
+                    'alta_inventory' => $this->averageValue($weekToDateWasteAlta, $weekToDateDayCount),
+                    'normal' => $this->averageValue($weekToDateWasteNormal, $weekToDateDayCount),
                 ],
 
                 'total_tips' => $this->summaryQuery->getTotalTips($store, $day->toMutable(), $day->toMutable()),
-                'total_tips_week_to_date' => $this->summaryQuery->getTotalTips(
-                    $store,
-                    $weekToDateStart->toMutable(),
-                    $weekToDateEnd->toMutable()
-                ),
+                'total_tips_week_to_date' => $weekToDateTips,
+                'total_tips_week_to_date_avg' => $this->averageValue($weekToDateTips, $weekToDateDayCount),
 
                 'hnr' => [
                     'hnr_transactions' => (int) ($daily->hnr_transactions ?? 0),
@@ -218,12 +242,15 @@ class ReportsController extends Controller
                         : 0.0,
                 ],
                 'hnr_week_to_date' => $this->hnrTotals($weekToDateTotals),
+                'hnr_week_to_date_avg' => $this->hnrTotalsAverage($weekToDateTotals, $weekToDateDayCount),
 
                 'labor' => 0,
                 'labor_week_to_date' => 0,
+                'labor_week_to_date_avg' => 0,
 
                 'portal' => array_merge($this->portalMetrics($store, $day), [
                     'week_to_date' => $weekToDatePortal,
+                    'week_to_date_avg' => $weekToDatePortalAvg,
                 ]),
             ],
         ];
@@ -578,6 +605,128 @@ class ReportsController extends Controller
                 ];
             })
             ->toArray();
+    }
+
+    private function hourlySalesByChannelSum(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        return HourlyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'hour,'
+                . ' SUM(royalty_obligation) as royalty_obligation,'
+                . ' SUM(phone_sales) as phone_sales,'
+                . ' SUM(call_center_sales) as call_center_sales,'
+                . ' SUM(drive_thru_sales) as drive_thru_sales,'
+                . ' SUM(website_sales) as website_sales,'
+                . ' SUM(mobile_sales) as mobile_sales,'
+                . ' SUM(doordash_sales) as doordash_sales,'
+                . ' SUM(ubereats_sales) as ubereats_sales,'
+                . ' SUM(grubhub_sales) as grubhub_sales'
+            )
+            ->groupBy('hour')
+            ->orderBy('hour')
+            ->get()
+            ->map(static function ($row) {
+                $royalty = (float) $row->royalty_obligation;
+                $phone = (float) $row->phone_sales;
+                $callCenter = (float) $row->call_center_sales;
+                $driveThru = (float) $row->drive_thru_sales;
+                $website = (float) $row->website_sales;
+                $mobile = (float) $row->mobile_sales;
+                $doordash = (float) $row->doordash_sales;
+                $ubereats = (float) $row->ubereats_sales;
+                $grubhub = (float) $row->grubhub_sales;
+
+                $adjusted = $royalty - (
+                    $phone + $callCenter + $driveThru + $website + $mobile + $doordash + $ubereats + $grubhub
+                );
+
+                return [
+                    'hour' => (int) $row->hour,
+                    'royalty_obligation' => round($royalty, 2),
+                    'phone_sales' => round($phone, 2),
+                    'call_center_sales' => round($callCenter, 2),
+                    'drive_thru_sales' => round($driveThru, 2),
+                    'website_sales' => round($website, 2),
+                    'mobile_sales' => round($mobile, 2),
+                    'doordash_sales' => round($doordash, 2),
+                    'ubereats_sales' => round($ubereats, 2),
+                    'grubhub_sales' => round($grubhub, 2),
+                    'adjusted_royalty_obligation' => round($adjusted, 2),
+                ];
+            })
+            ->toArray();
+    }
+
+    private function averageValue(float $value, int $days): float
+    {
+        if ($days <= 0) {
+            return 0.0;
+        }
+
+        return round($value / $days, 2);
+    }
+
+    private function averageSalesByChannelTotals(array $totals, int $days): array
+    {
+        return [
+            'royalty_obligation' => $this->averageValue((float) ($totals['royalty_obligation'] ?? 0), $days),
+            'phone_sales' => $this->averageValue((float) ($totals['phone_sales'] ?? 0), $days),
+            'call_center_sales' => $this->averageValue((float) ($totals['call_center_sales'] ?? 0), $days),
+            'drive_thru_sales' => $this->averageValue((float) ($totals['drive_thru_sales'] ?? 0), $days),
+            'website_sales' => $this->averageValue((float) ($totals['website_sales'] ?? 0), $days),
+            'mobile_sales' => $this->averageValue((float) ($totals['mobile_sales'] ?? 0), $days),
+            'doordash_sales' => $this->averageValue((float) ($totals['doordash_sales'] ?? 0), $days),
+            'ubereats_sales' => $this->averageValue((float) ($totals['ubereats_sales'] ?? 0), $days),
+            'grubhub_sales' => $this->averageValue((float) ($totals['grubhub_sales'] ?? 0), $days),
+        ];
+    }
+
+    private function averageWeekToDateTotals(array $totals, int $days): array
+    {
+        return [
+            'cash_sales' => $this->averageValue((float) ($totals['cash_sales'] ?? 0), $days),
+            'over_short' => $this->averageValue((float) ($totals['over_short'] ?? 0), $days),
+            'refunded_orders' => $this->averageValue((float) ($totals['refunded_orders'] ?? 0), $days),
+            'refund_amount' => $this->averageValue((float) ($totals['refund_amount'] ?? 0), $days),
+            'customer_count' => $this->averageValue((float) ($totals['customer_count'] ?? 0), $days),
+            'hnr_transactions' => $this->averageValue((float) ($totals['hnr_transactions'] ?? 0), $days),
+            'hnr_broken_promises' => $this->averageValue((float) ($totals['hnr_broken_promises'] ?? 0), $days),
+        ];
+    }
+
+    private function hnrTotalsAverage(array $totals, int $days): array
+    {
+        $transactions = $this->averageValue((float) ($totals['hnr_transactions'] ?? 0), $days);
+        $broken = $this->averageValue((float) ($totals['hnr_broken_promises'] ?? 0), $days);
+        $promiseMet = $transactions - $broken;
+
+        return [
+            'hnr_transactions' => $transactions,
+            'hnr_broken_promises' => $broken,
+            'hnr_promise_met' => round($promiseMet, 2),
+            'hnr_promise_met_percent' => $transactions > 0
+                ? round(($promiseMet / $transactions) * 100, 2)
+                : 0.0,
+        ];
+    }
+
+    private function portalMetricsAverage(array $metrics, int $days): array
+    {
+        $eligible = $this->averageValue((float) ($metrics['portal_eligible_orders'] ?? 0), $days);
+        $used = $this->averageValue((float) ($metrics['portal_used_orders'] ?? 0), $days);
+        $onTime = $this->averageValue((float) ($metrics['portal_on_time_orders'] ?? 0), $days);
+
+        return [
+            'portal_eligible_orders' => $eligible,
+            'portal_used_orders' => $used,
+            'portal_on_time_orders' => $onTime,
+            'put_into_portal_percent' => $eligible > 0 ? round(($used / $eligible) * 100, 2) : 0,
+            'in_portal_on_time_percent' => $used > 0 ? round(($onTime / $used) * 100, 2) : 0,
+        ];
     }
 
     private function totalSalesByChannelForRange(
