@@ -63,7 +63,7 @@ class SendDueKeyNotifications extends Command
                 }
 
                 $this->recordEvent($this->notificationSubject(), [
-                    'channels' => ['database'],
+                    'channels' => ['web'],
 
                     'users' => $userIds->map(function ($userId) use ($rule, $today, $dueTimeForMessage) {
                         return [
@@ -72,20 +72,8 @@ class SendDueKeyNotifications extends Command
                                 'type' => 'data_entry_key_due_soon',
 
                                 'title' => 'Data entry key due soon',
-                                'message' => "Key {$rule->key?->label} is due at {$dueTimeForMessage}.",
+                                'body' => "Key {$rule->key?->label} is due at {$dueTimeForMessage}.",
 
-                                'key_id' => $rule->key_id,
-                                'key_label' => $rule->key?->label,
-
-                                'store_id' => $rule->store_id,
-                                'fill_mode' => $rule->fill_mode,
-                                'role_names' => $rule->role_names,
-
-                                'frequency_type' => $rule->frequency_type,
-                                'due_date' => $today->toDateString(),
-                                'due_time' => $rule->due_time,
-
-                                'notify_before_minutes' => 30,
                             ],
                         ];
                     })->values()->all(),
