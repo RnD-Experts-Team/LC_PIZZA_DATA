@@ -962,6 +962,13 @@
                         "type": "integer"
                     },
 
+                    "due_time": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Time the key is due (HH:mm:ss)"
+                    },
+
                     "mode": {
                         "type": "string",
                         "enum": ["date_specific", "monthly_any_day"]
@@ -1008,7 +1015,22 @@
                     "data_type",
                     "fill_mode",
                     "filled"
-                ]
+                ],
+                "example": {
+                    "key_id": 12,
+                    "label": "Labor Hours",
+                    "data_type": "number",
+                    "frequency_type": "daily",
+                    "interval": 1,
+                    "due_time": "14:30:00",
+                    "mode": "date_specific",
+                    "fill_mode": "store_once",
+                    "user_id": null,
+                    "user_name": null,
+                    "role_name": null,
+                    "filled": false,
+                    "value": null
+                }
             },
             "Tag": {
                 "type": "object",
