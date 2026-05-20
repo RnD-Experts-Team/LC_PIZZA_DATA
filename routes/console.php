@@ -216,7 +216,7 @@ Schedule::command('validation:check-data')
 // MAINTENANCE SCHEDULES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
- 
+
 Schedule::call(function () {
     $logPath = storage_path('logs');
     $files = glob("{$logPath}/*.log");
@@ -243,18 +243,17 @@ Schedule::command('uploads:cleanup-temp')
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // KEY DUE NOTIFICATIONS
 Schedule::command('keys:send-due-notifications')
-->everyMinute()
-->timezone('America/New_York')
-->withoutOverlapping()
-->onOneServer()
-->appendOutputTo(storage_path('logs/key-due-notifications.log'))
-->name('key-due-notifications');
-
-// DATA OUTBOX PUBLISHER
-Schedule::command('data-outbox:publish')
     ->everyMinute()
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
-    ->appendOutputTo(storage_path('logs/data-outbox-publish.log'))
-    ->name('data-outbox-publish');
+    ->appendOutputTo(storage_path('logs/key-due-notifications.log'))
+    ->name('key-due-notifications');
+
+// DATA OUTBOX PUBLISHER
+Schedule::command('outbox:publish-pending')
+    ->everyFiveMinutes()
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('data-publish-pending');
