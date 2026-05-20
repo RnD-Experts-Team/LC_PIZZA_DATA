@@ -252,7 +252,7 @@ Schedule::command('keys:send-due-notifications')
 
 // DATA OUTBOX PUBLISHER
 Schedule::command('outbox:publish-pending')
-    ->everyFiveMinutes()
+    ->everyMinute()
     ->timezone('America/New_York')
     ->withoutOverlapping()
     ->onOneServer()
