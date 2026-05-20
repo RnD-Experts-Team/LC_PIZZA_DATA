@@ -38,14 +38,21 @@ class KeyController extends Controller
         $payload['store_rules'] = $this->normalizeStoreRules($payload['store_rules'] ?? []);
 
         $key = DB::transaction(function () use ($payload) {
-
             $key = EnteredKey::create([
                 'label' => $payload['label'],
                 'data_type' => $payload['data_type'],
                 'is_active' => $payload['is_active'] ?? true,
             ]);
 
-            $key->storeRules()->createMany($payload['store_rules']);
+            foreach ($payload['store_rules'] as $rulePayload) {
+                $time = $rulePayload['time'];
+
+                unset($rulePayload['time']);
+
+                $rulePayload['due_time'] = strlen($time) === 5 ? $time . ':00' : $time;
+
+                $key->storeRules()->create($rulePayload);
+            }
 
             if (!empty($payload['tags'])) {
                 $key->tags()->sync($payload['tags']);

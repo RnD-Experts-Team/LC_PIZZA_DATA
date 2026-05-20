@@ -23,6 +23,9 @@ class KeyStoreRule extends Model
         'week_day',
         'year_month',
 
+        'due_time',
+        'last_notified_at',
+
         'starts_at',
         'ends_at',
     ];
@@ -32,6 +35,7 @@ class KeyStoreRule extends Model
         'week_days' => 'array',
         'starts_at' => 'date',
         'ends_at' => 'date',
+        'last_notified_at' => 'datetime',
     ];
 
     public function key(): BelongsTo
