@@ -34,14 +34,25 @@ class KeyRuleController extends Controller
     {
         return array_map(function (array $rule) {
             $fillMode = $rule['fill_mode'] ?? 'store_once';
+            $time = $rule['time'] ?? null;
+            $dueTime = null;
 
-            return [
+            if (filled($time)) {
+                $dueTime = strlen($time) === 5 ? $time . ':00' : $time;
+            }
+
+            $normalized = [
                 ...$rule,
                 'fill_mode' => $fillMode,
+                'due_time' => $dueTime,
                 'role_names' => $fillMode === 'role_each'
                     ? array_values(array_unique(array_filter($rule['role_names'] ?? [], fn($v) => filled($v))))
                     : null,
             ];
+
+            unset($normalized['time']);
+
+            return $normalized;
         }, $rules);
     }
 }

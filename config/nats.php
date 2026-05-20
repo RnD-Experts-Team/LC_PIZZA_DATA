@@ -13,6 +13,9 @@ $dataSubject = $devMode
 $hiringSubject = $devMode
     ? 'hiring.testing.v1.>'
     : 'hiring.v1.>';
+$notificationsSubject = $devMode
+? 'notifications.testing.v1.>'
+: 'notifications.v1.>';
 return [
     'dev_mode' => $devMode,
     'host' => env('NATS_HOST', '127.0.0.1'),
@@ -22,6 +25,15 @@ return [
     'pass' => env('NATS_PASS'),
     'token' => env('NATS_TOKEN'),
 
+    'jetstream' => [
+        'stream' => $devMode
+            ? env('NATS_NOTIFICATIONS_STREAM', 'NOTIFICATIONS_TESTING_EVENTS')
+            : env('NATS_NOTIFICATIONS_STREAM', 'NOTIFICATIONS_EVENTS'),
+
+        'subjects' => [
+            $notificationsSubject,
+        ],
+    ],
 
 
     'publishers' => [
@@ -31,6 +43,12 @@ return [
                 : env('NATS_DATA_STREAM', 'DATA_EVENTS'),
             'subjects' => [$dataSubject],
         ],
+        [
+        'name' => $devMode
+            ? env('NATS_NOTIFICATIONS_STREAM', 'NOTIFICATIONS_TESTING_EVENTS')
+            : env('NATS_NOTIFICATIONS_STREAM', 'NOTIFICATIONS_EVENTS'),
+        'subjects' => [$notificationsSubject],
+         ],
     ],
     /**
      * Add streams here as new projects appear.

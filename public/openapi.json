@@ -21,36 +21,9 @@
         {
             "name": "Manual Import",
             "description": "Manual CSV and ZIP data imports"
-        },
-        {
-            "name": "Key Engine - Keys",
-            "description": "Manage data keys and store rules"
-        },
-        {
-            "name": "Key Engine - Values",
-            "description": "Store and query entered key values"
-        },
-        {
-            "name": "Key Engine - Due",
-            "description": "Resolve which keys are due"
-        },
-        {
-            "name": "Employee Debriefs",
-            "description": "Employee debrief notes per store"
-        },
-        {
-            "name": "Key Engine - Tags",
-            "description": "Manage key tags"
         }
     ],
     "components": {
-        "securitySchemes": {
-            "BearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT"
-            }
-        },
         "schemas": {
             "ErrorResponse": {
                 "type": "object",
@@ -324,6 +297,7 @@
                 "properties": {
                     "hour": { "type": "integer", "minimum": 0, "maximum": 23 },
                     "royalty_obligation": { "type": "number" },
+                    "adjusted_royalty_obligation": { "type": "number" },
                     "phone_sales": { "type": "number" },
                     "call_center_sales": { "type": "number" },
                     "drive_thru_sales": { "type": "number" },
@@ -336,6 +310,7 @@
                 "required": [
                     "hour",
                     "royalty_obligation",
+                    "adjusted_royalty_obligation",
                     "phone_sales",
                     "call_center_sales",
                     "drive_thru_sales",
@@ -360,12 +335,35 @@
                 },
                 "required": ["count", "sales"]
             },
+            "DsprLiteDayRefundedOrdersAverage": {
+                "type": "object",
+                "properties": {
+                    "count": { "type": "number" },
+                    "sales": { "type": "number" }
+                },
+                "required": ["count", "sales"]
+            },
             "DsprLiteDayHnr": {
                 "type": "object",
                 "properties": {
                     "hnr_transactions": { "type": "integer" },
                     "hnr_broken_promises": { "type": "integer" },
                     "hnr_promise_met": { "type": "integer" },
+                    "hnr_promise_met_percent": { "type": "number" }
+                },
+                "required": [
+                    "hnr_transactions",
+                    "hnr_broken_promises",
+                    "hnr_promise_met",
+                    "hnr_promise_met_percent"
+                ]
+            },
+            "DsprLiteDayHnrAverage": {
+                "type": "object",
+                "properties": {
+                    "hnr_transactions": { "type": "number" },
+                    "hnr_broken_promises": { "type": "number" },
+                    "hnr_promise_met": { "type": "number" },
                     "hnr_promise_met_percent": { "type": "number" }
                 },
                 "required": [
@@ -383,7 +381,7 @@
                 },
                 "required": ["alta_inventory", "normal"]
             },
-            "DsprLiteDayPortal": {
+            "DsprLitePortalMetrics": {
                 "type": "object",
                 "properties": {
                     "portal_eligible_orders": { "type": "integer" },
@@ -400,13 +398,111 @@
                     "in_portal_on_time_percent"
                 ]
             },
+            "DsprLitePortalMetricsAverage": {
+                "type": "object",
+                "properties": {
+                    "portal_eligible_orders": { "type": "number" },
+                    "portal_used_orders": { "type": "number" },
+                    "portal_on_time_orders": { "type": "number" },
+                    "put_into_portal_percent": { "type": "number" },
+                    "in_portal_on_time_percent": { "type": "number" }
+                },
+                "required": [
+                    "portal_eligible_orders",
+                    "portal_used_orders",
+                    "portal_on_time_orders",
+                    "put_into_portal_percent",
+                    "in_portal_on_time_percent"
+                ]
+            },
+            "DsprLiteDayPortal": {
+                "type": "object",
+                "properties": {
+                    "portal_eligible_orders": { "type": "integer" },
+                    "portal_used_orders": { "type": "integer" },
+                    "portal_on_time_orders": { "type": "integer" },
+                    "put_into_portal_percent": { "type": "number" },
+                    "in_portal_on_time_percent": { "type": "number" },
+                    "week_to_date": {
+                        "$ref": "#/components/schemas/DsprLitePortalMetrics"
+                    },
+                    "week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLitePortalMetricsAverage"
+                    }
+                },
+                "required": [
+                    "portal_eligible_orders",
+                    "portal_used_orders",
+                    "portal_on_time_orders",
+                    "put_into_portal_percent",
+                    "in_portal_on_time_percent",
+                    "week_to_date",
+                    "week_to_date_avg"
+                ]
+            },
             "DsprLiteDayTotals": {
                 "type": "object",
                 "properties": {
                     "hourly_sales_and_channels": {
                         "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
                     },
+                    "hourly_sales_and_channels_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
+                    },
+                    "hourly_sales_and_channels_week_to_date_sum": {
+                        "$ref": "#/components/schemas/DsprLiteHourlySalesByChannel"
+                    },
                     "total_sales": {
+                        "type": "object",
+                        "properties": {
+                            "royalty_obligation": { "type": "number" },
+                            "phone_sales": { "type": "number" },
+                            "call_center_sales": { "type": "number" },
+                            "drive_thru_sales": { "type": "number" },
+                            "website_sales": { "type": "number" },
+                            "mobile_sales": { "type": "number" },
+                            "doordash_sales": { "type": "number" },
+                            "ubereats_sales": { "type": "number" },
+                            "grubhub_sales": { "type": "number" }
+                        },
+                        "required": [
+                            "royalty_obligation",
+                            "phone_sales",
+                            "call_center_sales",
+                            "drive_thru_sales",
+                            "website_sales",
+                            "mobile_sales",
+                            "doordash_sales",
+                            "ubereats_sales",
+                            "grubhub_sales"
+                        ]
+                    },
+                    "total_sales_week_to_date": {
+                        "type": "object",
+                        "properties": {
+                            "royalty_obligation": { "type": "number" },
+                            "phone_sales": { "type": "number" },
+                            "call_center_sales": { "type": "number" },
+                            "drive_thru_sales": { "type": "number" },
+                            "website_sales": { "type": "number" },
+                            "mobile_sales": { "type": "number" },
+                            "doordash_sales": { "type": "number" },
+                            "ubereats_sales": { "type": "number" },
+                            "grubhub_sales": { "type": "number" }
+                        },
+                        "required": [
+                            "royalty_obligation",
+                            "phone_sales",
+                            "call_center_sales",
+                            "drive_thru_sales",
+                            "website_sales",
+                            "mobile_sales",
+                            "doordash_sales",
+                            "ubereats_sales",
+                            "grubhub_sales"
+                        ]
+                    },
+                    "total_sales_week_to_date_avg": {
                         "type": "object",
                         "properties": {
                             "royalty_obligation": { "type": "number" },
@@ -436,38 +532,90 @@
                     "total_gross_sales": { "type": "number" },
                     "total_digital_sales": { "type": "number" },
                     "total_cash_sales": { "type": "number" },
+                    "total_cash_sales_week_to_date": { "type": "number" },
+                    "total_cash_sales_week_to_date_avg": { "type": "number" },
                     "total_deposit": { "type": "number" },
+                    "total_deposit_week_to_date": { "type": "number" },
+                    "total_deposit_week_to_date_avg": { "type": "number" },
                     "over_short": { "type": "number" },
+                    "over_short_week_to_date": { "type": "number" },
+                    "over_short_week_to_date_avg": { "type": "number" },
                     "refunded_orders": {
                         "$ref": "#/components/schemas/DsprLiteDayRefundedOrders"
                     },
+                    "refunded_orders_week_to_date": {
+                        "$ref": "#/components/schemas/DsprLiteDayRefundedOrders"
+                    },
+                    "refunded_orders_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayRefundedOrdersAverage"
+                    },
                     "customer_count": { "type": "integer" },
+                    "customer_count_week_to_date": { "type": "integer" },
+                    "customer_count_week_to_date_avg": { "type": "number" },
                     "waste": {
                         "$ref": "#/components/schemas/DsprLiteDayWaste"
                     },
+                    "waste_week_to_date": {
+                        "$ref": "#/components/schemas/DsprLiteDayWaste"
+                    },
+                    "waste_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayWaste"
+                    },
                     "total_tips": { "type": "number" },
+                    "total_tips_week_to_date": { "type": "number" },
+                    "total_tips_week_to_date_avg": { "type": "number" },
                     "hnr": { "$ref": "#/components/schemas/DsprLiteDayHnr" },
+                    "hnr_week_to_date": {
+                        "$ref": "#/components/schemas/DsprLiteDayHnr"
+                    },
+                    "hnr_week_to_date_avg": {
+                        "$ref": "#/components/schemas/DsprLiteDayHnrAverage"
+                    },
                     "labor": { "type": "number" },
+                    "labor_week_to_date": { "type": "number" },
+                    "labor_week_to_date_avg": { "type": "number" },
                     "portal": {
                         "$ref": "#/components/schemas/DsprLiteDayPortal"
                     }
                 },
                 "required": [
                     "hourly_sales_and_channels",
+                    "hourly_sales_and_channels_week_to_date_avg",
+                    "hourly_sales_and_channels_week_to_date_sum",
                     "total_sales",
+                    "total_sales_week_to_date",
+                    "total_sales_week_to_date_avg",
                     "total_royalty_obligation",
                     "total_net_sales",
                     "total_gross_sales",
                     "total_digital_sales",
                     "total_cash_sales",
+                    "total_cash_sales_week_to_date",
+                    "total_cash_sales_week_to_date_avg",
                     "total_deposit",
+                    "total_deposit_week_to_date",
+                    "total_deposit_week_to_date_avg",
                     "over_short",
+                    "over_short_week_to_date",
+                    "over_short_week_to_date_avg",
                     "refunded_orders",
+                    "refunded_orders_week_to_date",
+                    "refunded_orders_week_to_date_avg",
                     "customer_count",
+                    "customer_count_week_to_date",
+                    "customer_count_week_to_date_avg",
                     "waste",
+                    "waste_week_to_date",
+                    "waste_week_to_date_avg",
                     "total_tips",
+                    "total_tips_week_to_date",
+                    "total_tips_week_to_date_avg",
                     "hnr",
+                    "hnr_week_to_date",
+                    "hnr_week_to_date_avg",
                     "labor",
+                    "labor_week_to_date",
+                    "labor_week_to_date_avg",
                     "portal"
                 ]
             },
@@ -488,12 +636,18 @@
                             },
                             "same_week_last_year_by_day": {
                                 "$ref": "#/components/schemas/DsprLiteSalesByDay"
-                            }
+                            },
+                            "this_week_total": { "type": "number" },
+                            "previous_week_total": { "type": "number" },
+                            "same_week_last_year_total": { "type": "number" }
                         },
                         "required": [
                             "this_week_by_day",
                             "previous_week_by_day",
-                            "same_week_last_year_by_day"
+                            "same_week_last_year_by_day",
+                            "this_week_total",
+                            "previous_week_total",
+                            "same_week_last_year_total"
                         ]
                     },
                     "top": {
@@ -502,12 +656,16 @@
                             "top_5_items_sales_for_day": {
                                 "$ref": "#/components/schemas/DsprLiteTopItems"
                             },
+                            "top_5_items_sales_week_to_date": {
+                                "$ref": "#/components/schemas/DsprLiteTopItems"
+                            },
                             "top_3_ingredients_used": {
                                 "$ref": "#/components/schemas/DsprLiteTopIngredients"
                             }
                         },
                         "required": [
                             "top_5_items_sales_for_day",
+                            "top_5_items_sales_week_to_date",
                             "top_3_ingredients_used"
                         ]
                     },
@@ -581,6 +739,13 @@
                         "minimum": 1,
                         "maximum": 12,
                         "nullable": true
+                    },
+
+                    "due_time": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Time the key is due (HH:mm or HH:mm:ss)"
                     },
 
                     "starts_at": {
@@ -718,6 +883,13 @@
                         "minimum": 1,
                         "maximum": 12,
                         "nullable": true
+                    },
+
+                    "time": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Optional due time in HH:mm format"
                     },
 
                     "starts_at": {
