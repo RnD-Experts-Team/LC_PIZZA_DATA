@@ -47,6 +47,8 @@ class UpdateKeyRequest extends FormRequest
             'store_rules.*.starts_at' => 'required|date_format:Y-m-d',
             'store_rules.*.ends_at' => 'nullable|date_format:Y-m-d',
 
+            'store_rules.*.time' => 'nullable|date_format:H:i',
+
             'tags' => 'nullable|array',
             'tags.*' => 'exists:tags,id',
         ];
@@ -87,6 +89,7 @@ class UpdateKeyRequest extends FormRequest
             'store_rules.*.fill_mode.in' => 'fill_mode must be store_once or role_each.',
             'store_rules.*.role_names.array' => 'role_names must be an array.',
             'store_rules.*.role_names.*.string' => 'Each role name must be a string.',
+            'store_rules.*.time.date_format' => 'time must be HH:mm format.',
         ];
     }
 }

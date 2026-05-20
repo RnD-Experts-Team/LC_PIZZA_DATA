@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\PublishDataOutboxEventJob;
+use App\Jobs\PublishOutboxEventJob;
 use App\Models\KeyStoreRule;
 use App\Models\UserStoreRole;
 use App\Services\DataEntry\ScheduleEvaluationService;
@@ -26,7 +26,10 @@ class SendDueKeyNotifications extends Command
 
         $rules = KeyStoreRule::query()
             ->with('key')
-            ->whereTime('due_time', $targetTime)
+            ->where('due_time', $targetTime)
+            ->whereHas('key', function ($query) {
+                $query->where('is_active', true);
+            })
             ->where(function ($query) use ($today) {
                 $query->whereNull('last_notified_at')
                     ->orWhereDate('last_notified_at', '!=', $today->toDateString());
@@ -34,10 +37,6 @@ class SendDueKeyNotifications extends Command
             ->get();
 
         foreach ($rules as $rule) {
-            if (!$rule->key || !$rule->key->is_active) {
-                continue;
-            }
-
             $isDue = $schedule->isMonthlyAnyDayRule($rule)
                 ? $schedule->monthlyIsApplicableThisMonth($rule, $today)
                 : $schedule->isDueOnDate($rule, $today);
@@ -46,7 +45,7 @@ class SendDueKeyNotifications extends Command
                 continue;
             }
 
-            DB::transaction(function () use ($rule, $today, $targetTime) {
+            DB::transaction(function () use ($rule, $today, $targetTime, $now) {
                 $userIds = $this->getTargetUserIds($rule);
 
                 if ($userIds->isEmpty()) {
@@ -83,7 +82,7 @@ class SendDueKeyNotifications extends Command
                 ]);
 
                 $rule->update([
-                    'last_notified_at' => now('America/New_York'),
+                    'last_notified_at' => $now->copy(),
                 ]);
             });
         }
@@ -99,14 +98,12 @@ class SendDueKeyNotifications extends Command
         $envelope = $factory->make($subject, $data);
         $row = $outbox->record($subject, $envelope);
 
-        DB::afterCommit(fn () => PublishDataOutboxEventJob::dispatch($row->id));
+        PublishOutboxEventJob::dispatch($row->id);
     }
 
     private function notificationSubject(): string
     {
-        return config('nats.dev_mode')
-            ? 'notifications.testing.v1.send'
-            : 'notifications.v1.send';
+        return 'notifications.v1.notification.send';
     }
 
     private function getTargetUserIds($rule)

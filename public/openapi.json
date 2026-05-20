@@ -741,6 +741,13 @@
                         "nullable": true
                     },
 
+                    "due_time": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Time the key is due (HH:mm or HH:mm:ss)"
+                    },
+
                     "starts_at": {
                         "type": "string",
                         "format": "date"
@@ -876,6 +883,13 @@
                         "minimum": 1,
                         "maximum": 12,
                         "nullable": true
+                    },
+
+                    "time": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Optional due time in HH:mm format"
                     },
 
                     "starts_at": {

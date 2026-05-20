@@ -9,29 +9,26 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Throwable;
 
-class PublishDataOutboxEventJob implements ShouldQueue
+class PublishOutboxEventJob implements ShouldQueue
 {
-    use Dispatchable;
-    use InteractsWithQueue;
-    use Queueable;
-    use SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 3;
+    public int $tries = 10;
 
-    public function __construct(
-        public string $outboxEventId
-    ) {
+    public function __construct(public string $outboxEventId)
+    {
     }
 
     public function handle(JetStreamPublisher $publisher): void
     {
-        $event = DataOutboxEvent::query()->findOrFail($this->outboxEventId);
+        $event = DataOutboxEvent::find($this->outboxEventId);
 
-        if ($event->published_at !== null) {
+        if (!$event)
             return;
-        }
+
+        if ($event->published_at)
+            return;
 
         try {
             $publisher->publish($event->subject, $event->payload);
@@ -40,13 +37,23 @@ class PublishDataOutboxEventJob implements ShouldQueue
                 'published_at' => now(),
                 'last_error' => null,
             ]);
-        } catch (Throwable $e) {
+        } catch (\Throwable $e) {
+            $event->increment('attempts');
+
             $event->update([
-                'attempts' => $event->attempts + 1,
                 'last_error' => $e->getMessage(),
             ]);
 
-            throw $e;
+            throw $e; // let Laravel retry
         }
+    }
+
+    public function failed(\Throwable $e): void
+    {
+        DataOutboxEvent::query()
+            ->where('id', $this->outboxEventId)
+            ->update([
+                'last_error' => $e->getMessage(),
+            ]);
     }
 }
