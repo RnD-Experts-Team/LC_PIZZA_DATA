@@ -90,6 +90,7 @@ class DueKeyResolverService
                         'data_type' => $key->data_type,
                         'frequency_type' => $rule->frequency_type,
                         'interval' => (int) $rule->interval,
+                        'due_time' => $rule->due_time,
                         'mode' => 'monthly_any_day',
                         'fill_mode' => $rule->fill_mode,
                         'user_id' => $value?->user_id,
@@ -127,6 +128,7 @@ class DueKeyResolverService
 
                             'frequency_type' => $rule->frequency_type,
                             'interval' => (int) $rule->interval,
+                            'due_time' => $rule->due_time,
 
                             'mode' => 'monthly_any_day',
                             'fill_mode' => $rule->fill_mode,
@@ -168,6 +170,7 @@ class DueKeyResolverService
                     'data_type' => $key->data_type,
                     'frequency_type' => $rule->frequency_type,
                     'interval' => (int) $rule->interval,
+                    'due_time' => $rule->due_time,
                     'mode' => 'date_specific',
                     'fill_mode' => $rule->fill_mode,
                     'user_id' => $value?->user_id,
@@ -202,6 +205,7 @@ class DueKeyResolverService
 
                         'frequency_type' => $rule->frequency_type,
                         'interval' => (int) $rule->interval,
+                        'due_time' => $rule->due_time,
 
                         'mode' => 'date_specific',
                         'fill_mode' => $rule->fill_mode,

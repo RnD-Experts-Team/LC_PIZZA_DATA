@@ -23,10 +23,18 @@ class SendDueKeyNotifications extends Command
         $today = $now->copy()->startOfDay();
 
         $targetTime = $now->copy()->addMinutes(30)->format('H:i:00');
+        $nullDueNotificationTime = $today->copy()->addDay()->startOfDay()->subMinutes(30)->format('H:i:00');
+        $includeNullDueTime = $targetTime === $nullDueNotificationTime;
 
         $rules = KeyStoreRule::query()
             ->with('key')
-            ->where('due_time', $targetTime)
+            ->where(function ($query) use ($targetTime, $includeNullDueTime) {
+                $query->where('due_time', $targetTime);
+
+                if ($includeNullDueTime) {
+                    $query->orWhereNull('due_time');
+                }
+            })
             ->whereHas('key', function ($query) {
                 $query->where('is_active', true);
             })
@@ -45,7 +53,9 @@ class SendDueKeyNotifications extends Command
                 continue;
             }
 
-            DB::transaction(function () use ($rule, $today, $targetTime, $now) {
+            $dueTimeForMessage = $rule->due_time ?? 'end of day';
+
+            DB::transaction(function () use ($rule, $today, $dueTimeForMessage, $now) {
                 $userIds = $this->getTargetUserIds($rule);
 
                 if ($userIds->isEmpty()) {
@@ -55,14 +65,14 @@ class SendDueKeyNotifications extends Command
                 $this->recordEvent($this->notificationSubject(), [
                     'channels' => ['database'],
 
-                    'users' => $userIds->map(function ($userId) use ($rule, $today, $targetTime) {
+                    'users' => $userIds->map(function ($userId) use ($rule, $today, $dueTimeForMessage) {
                         return [
                             'id' => (int) $userId,
                             'data' => [
                                 'type' => 'data_entry_key_due_soon',
 
                                 'title' => 'Data entry key due soon',
-                                'message' => "Key {$rule->key?->label} is due at {$targetTime}.",
+                                'message' => "Key {$rule->key?->label} is due at {$dueTimeForMessage}.",
 
                                 'key_id' => $rule->key_id,
                                 'key_label' => $rule->key?->label,
@@ -73,7 +83,7 @@ class SendDueKeyNotifications extends Command
 
                                 'frequency_type' => $rule->frequency_type,
                                 'due_date' => $today->toDateString(),
-                                'due_time' => $targetTime,
+                                'due_time' => $rule->due_time,
 
                                 'notify_before_minutes' => 30,
                             ],
