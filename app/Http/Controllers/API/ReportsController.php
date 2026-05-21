@@ -301,23 +301,25 @@ class ReportsController extends Controller
     {
         return sprintf('reports:dspr-lite:%s:%s', strtolower($store), $date);
     }
-    private function getGoalsForStoreDate(string $store, string $date)
+    private function getGoalsForStoreDate(string $store, string $date): array
     {
-        $targetDate = CarbonImmutable::parse($date)->startOfDay();
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
 
-        // Fetch GoalMetrics with relevant Goals in one query
-        $goalMetrics = GoalMetric::whereHas('goals', function ($query) use ($store, $targetDate) {
+        // Goals are weekly ranges, so keep any goal that overlaps the report week.
+        $goalMetrics = GoalMetric::whereHas('goals', function ($query) use ($store, $weekStart, $weekEnd) {
             $query->where('store_id', $store)
-                ->whereDate('week_start_date', '<=', $targetDate)
-                ->whereDate('week_end_date', '>=', $targetDate);
+                ->whereDate('week_start_date', '<=', $weekEnd)
+                ->whereDate('week_end_date', '>=', $weekStart);
         })
             ->with([
-                'goals' => function ($query) use ($store, $targetDate) {
+                'goals' => function ($query) use ($store, $weekStart, $weekEnd) {
                     $query->where('store_id', $store)
-                        ->whereDate('week_start_date', '<=', $targetDate)
-                        ->whereDate('week_end_date', '>=', $targetDate);
+                        ->whereDate('week_start_date', '<=', $weekEnd)
+                        ->whereDate('week_end_date', '>=', $weekStart);
                 }
             ])
+            ->orderBy('name')
             ->get();
 
         return $goalMetrics->map(function ($metric) {
