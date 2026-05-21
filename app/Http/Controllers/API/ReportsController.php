@@ -11,6 +11,7 @@ use App\Services\Analytics\SummaryQueryService;
 use App\Services\Database\DatabaseRouter;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -31,6 +32,13 @@ class ReportsController extends Controller
      * 48 hours = 172800
      */
     private const CACHE_TTL = 172800;
+
+    private const UPSELL_ITEM_IDS = ['201128', '201106'];
+
+    private const IN_STORE_BUCKET = [
+        'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
+        'fulfilled' => ['Register', 'Drive-Thru'],
+    ];
 
     public function __construct(
         private readonly SummaryQueryService $summaryQuery,
@@ -91,6 +99,9 @@ class ReportsController extends Controller
             $weekToDateStart->toMutable(),
             $weekToDateEnd->toMutable()
         );
+
+        $upsellingDay = $this->upsellingForRange($store, $day, $day);
+        $upsellingWeekToDate = $this->upsellingForRange($store, $weekToDateStart, $weekToDateEnd);
 
         $totalSales = [
             'royalty_obligation' => 0,
@@ -251,6 +262,12 @@ class ReportsController extends Controller
                 'hnr_week_to_date' => $this->hnrTotals($weekToDateTotals),
                 'hnr_week_to_date_avg' => $this->hnrTotalsAverage($weekToDateTotals, $weekToDateDayCount),
 
+                'upselling' => [
+                    'bucket' => 'in_store',
+                    'day' => $upsellingDay,
+                    'week_to_date' => $upsellingWeekToDate,
+                ],
+
                 'labor' => 0,
                 'labor_week_to_date' => 0,
                 'labor_week_to_date_avg' => 0,
@@ -383,8 +400,7 @@ class ReportsController extends Controller
         CarbonImmutable $day,
         int $limit,
         string $orderByField = 'gross_sales'
-    ): array
-    {
+    ): array {
         return $this->topItemsForRange($store, $day, $day, $limit, $orderByField);
     }
 
@@ -908,6 +924,109 @@ class ReportsController extends Controller
             ->where('franchise_store', $store)
             ->selectRaw('SUM(item_cost * quantity) as total_waste_cost')
             ->value('total_waste_cost') ?? 0.0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Upselling (in-store bucket only)
+    // ---------------------------------------------------------------------
+
+    private function upsellingForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        return [
+            'sold_with_pizza_units' => $this->soldWithPizzaUnitsForRange($store, $start, $end),
+            'items' => $this->upsellingItemsForRange($store, $start, $end),
+        ];
+    }
+
+    private function soldWithPizzaUnitsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $base = $this->applyInStoreBucketFilters(
+            $this->orderLineSource($start, $end)->where('franchise_store', $store)
+        );
+
+        $pizzaOrders = (clone $base)
+            ->whereNotNull('order_id')
+            ->where('is_pizza', 1)
+            ->select('order_id')
+            ->distinct();
+
+        $pizzaBase = (int) (clone $base)
+            ->where('is_pizza', 1)
+            ->sum('quantity');
+
+        $totals = (clone $base)
+            ->whereNotNull('order_id')
+            ->whereIn('order_id', $pizzaOrders)
+            ->selectRaw("\n                SUM(CASE WHEN item_id = '103001' THEN COALESCE(quantity, 0) ELSE 0 END) as crazy_bread,\n                SUM(CASE WHEN item_id IN ('101288', '101289') THEN COALESCE(quantity, 0) ELSE 0 END) as cookies,\n                SUM(CASE WHEN item_id = '103002' THEN COALESCE(quantity, 0) ELSE 0 END) as sauce,\n                SUM(CASE WHEN is_wings = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as wings,\n                SUM(CASE WHEN is_beverages = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as beverages,\n                SUM(CASE WHEN is_crazy_puffs = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as crazy_puffs,\n                SUM(CASE WHEN item_id = '204100' THEN COALESCE(quantity, 0) ELSE 0 END) as bev_20oz,\n                SUM(CASE WHEN item_id = '204200' THEN COALESCE(quantity, 0) ELSE 0 END) as bev_2l,\n                SUM(CASE WHEN item_id IN ('203003', '103003') THEN COALESCE(quantity, 0) ELSE 0 END) as italian_cheese_bread\n            ")
+            ->first();
+
+        return [
+            'crazy_bread' => (int) ($totals->crazy_bread ?? 0),
+            'cookies' => (int) ($totals->cookies ?? 0),
+            'sauce' => (int) ($totals->sauce ?? 0),
+            'wings' => (int) ($totals->wings ?? 0),
+            'beverages' => (int) ($totals->beverages ?? 0),
+            'crazy_puffs' => (int) ($totals->crazy_puffs ?? 0),
+            'bev_20oz' => (int) ($totals->bev_20oz ?? 0),
+            'bev_2l' => (int) ($totals->bev_2l ?? 0),
+            'italian_cheese_bread' => (int) ($totals->italian_cheese_bread ?? 0),
+            'pizza_base' => $pizzaBase,
+        ];
+    }
+
+    private function upsellingItemsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $rows = $this->applyInStoreBucketFilters(
+            $this->orderLineSource($start, $end)
+                ->where('franchise_store', $store)
+                ->whereIn('item_id', self::UPSELL_ITEM_IDS)
+        )
+            ->selectRaw('item_id, MAX(menu_item_name) as menu_item_name, SUM(COALESCE(quantity, 0)) as units_sold')
+            ->groupBy('item_id')
+            ->get();
+
+        $items = [];
+        foreach (self::UPSELL_ITEM_IDS as $id) {
+            $items[$id] = [
+                'item_id' => (int) $id,
+                'menu_item_name' => '',
+                'units_sold' => 0,
+            ];
+        }
+
+        foreach ($rows as $row) {
+            $id = (string) $row->item_id;
+            if (!isset($items[$id])) {
+                continue;
+            }
+            $items[$id] = [
+                'item_id' => (int) $id,
+                'menu_item_name' => (string) ($row->menu_item_name ?? ''),
+                'units_sold' => (int) ($row->units_sold ?? 0),
+            ];
+        }
+
+        return array_values($items);
+    }
+
+    private function orderLineSource(CarbonImmutable $start, CarbonImmutable $end): Builder
+    {
+        $queries = DatabaseRouter::routedQueries('order_line', $start->toMutable(), $end->toMutable());
+
+        $union = array_shift($queries);
+        foreach ($queries as $q) {
+            $union->unionAll($q);
+        }
+
+        // Union hot + archive order_line tables for the requested range.
+        return DB::query()->fromSub($union, 'ol');
+    }
+
+    private function applyInStoreBucketFilters(Builder $query): Builder
+    {
+        return $query
+            ->whereIn('order_placed_method', self::IN_STORE_BUCKET['placed'])
+            ->whereIn('order_fulfilled_method', self::IN_STORE_BUCKET['fulfilled']);
     }
 
 
