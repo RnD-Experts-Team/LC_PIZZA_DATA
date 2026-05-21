@@ -159,6 +159,7 @@ class ReportsController extends Controller
             'top' => [
                 'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5),
                 'top_5_items_sales_week_to_date' => $weekToDateTopItems,
+                'top_5_items_sales_week_to_date_avg' => $this->averageTopItems($weekToDateTopItems, $weekToDateDayCount),
 
                 'ingredients' => [
                     'top_5_ingredients_variance_high' => $this->topIngredientsForDay($store, $day, 5, 'desc'),
@@ -392,11 +393,30 @@ class ReportsController extends Controller
                 ['field' => 'quantity_sold', 'agg' => 'SUM', 'alias' => 'quantity_sold'],
             ],
             'filters' => ['franchise_store' => $store],
-            'order_by' => 'gross_sales DESC',
+            'order_by' => 'quantity_sold DESC',
             'limit' => $limit,
         ]);
 
         return $result['data'] ?? [];
+    }
+
+    private function averageTopItems(array $items, int $days): array
+    {
+        if ($days <= 0) {
+            return $items;
+        }
+
+        return array_map(static function (array $item) use ($days) {
+            if (isset($item['quantity_sold'])) {
+                $item['quantity_sold'] = round((float) $item['quantity_sold'] / $days, 2);
+            }
+
+            if (isset($item['gross_sales'])) {
+                $item['gross_sales'] = round((float) $item['gross_sales'] / $days, 2);
+            }
+
+            return $item;
+        }, $items);
     }
 
     // ---------------------------------------------------------------------
