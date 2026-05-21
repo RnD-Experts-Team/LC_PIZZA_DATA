@@ -79,7 +79,8 @@ class ReportsController extends Controller
         $weekToDateTotalsAvg = $this->averageWeekToDateTotals($weekToDateTotals, $weekToDateDayCount);
         $weekToDateSalesTotals = $this->totalSalesByChannelForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateSalesTotalsAvg = $this->averageSalesByChannelTotals($weekToDateSalesTotals, $weekToDateDayCount);
-        $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5);
+        $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5, 'gross_sales');
+        $weekToDateTopItemsByCount = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5, 'quantity_sold');
         $weekToDatePortal = $this->portalMetricsForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDatePortalAvg = $this->portalMetricsAverage($weekToDatePortal, $weekToDateDayCount);
         $weekToDateDeposit = $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd);
@@ -157,9 +158,13 @@ class ReportsController extends Controller
             ],
 
             'top' => [
-                'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5),
+                'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5, 'gross_sales'),
                 'top_5_items_sales_week_to_date' => $weekToDateTopItems,
                 'top_5_items_sales_week_to_date_avg' => $this->averageTopItems($weekToDateTopItems, $weekToDateDayCount),
+
+                'top_5_items_count_for_day' => $this->topItemsForDay($store, $day, 5, 'quantity_sold'),
+                'top_5_items_count_week_to_date' => $weekToDateTopItemsByCount,
+                'top_5_items_count_week_to_date_avg' => $this->averageTopItems($weekToDateTopItemsByCount, $weekToDateDayCount),
 
                 'ingredients' => [
                     'top_5_ingredients_variance_high' => $this->topIngredientsForDay($store, $day, 5, 'desc'),
@@ -373,17 +378,25 @@ class ReportsController extends Controller
     // Top Items
     // ---------------------------------------------------------------------
 
-    private function topItemsForDay(string $store, CarbonImmutable $day, int $limit): array
+    private function topItemsForDay(
+        string $store,
+        CarbonImmutable $day,
+        int $limit,
+        string $orderByField = 'gross_sales'
+    ): array
     {
-        return $this->topItemsForRange($store, $day, $day, $limit);
+        return $this->topItemsForRange($store, $day, $day, $limit, $orderByField);
     }
 
     private function topItemsForRange(
         string $store,
         CarbonImmutable $start,
         CarbonImmutable $end,
-        int $limit
+        int $limit,
+        string $orderByField = 'gross_sales'
     ): array {
+        $orderByField = $orderByField === 'quantity_sold' ? 'quantity_sold' : 'gross_sales';
+
         $result = $this->intelligentAgg->fetchAggregatedData([
             'start_date' => $start->toDateString(),
             'end_date' => $end->toDateString(),
@@ -393,7 +406,7 @@ class ReportsController extends Controller
                 ['field' => 'quantity_sold', 'agg' => 'SUM', 'alias' => 'quantity_sold'],
             ],
             'filters' => ['franchise_store' => $store],
-            'order_by' => 'quantity_sold DESC',
+            'order_by' => $orderByField . ' DESC',
             'limit' => $limit,
         ]);
 
