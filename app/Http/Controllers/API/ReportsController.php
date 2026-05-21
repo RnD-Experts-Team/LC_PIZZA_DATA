@@ -34,7 +34,10 @@ class ReportsController extends Controller
     private const CACHE_TTL = 172800;
 
     private const UPSELL_ITEM_IDS = ['201128', '201106'];
-
+    private const UPSELL_ITEM_NAMES = [
+        '201128' => 'EMB Cheese',
+        '201106' => 'EMB Pepperoni',
+    ];
     private const IN_STORE_BUCKET = [
         'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
         'fulfilled' => ['Register', 'Drive-Thru'],
@@ -102,6 +105,8 @@ class ReportsController extends Controller
 
         $upsellingDay = $this->upsellingForRange($store, $day, $day);
         $upsellingWeekToDate = $this->upsellingForRange($store, $weekToDateStart, $weekToDateEnd);
+        $totalUpsellingDay = $this->totalUpsellingUnits($upsellingDay);
+        $totalUpsellingWeekToDate = $this->totalUpsellingUnits($upsellingWeekToDate);
 
         $totalSales = [
             'royalty_obligation' => 0,
@@ -263,9 +268,10 @@ class ReportsController extends Controller
                 'hnr_week_to_date_avg' => $this->hnrTotalsAverage($weekToDateTotals, $weekToDateDayCount),
 
                 'upselling' => [
-                    'bucket' => 'in_store',
                     'day' => $upsellingDay,
                     'week_to_date' => $upsellingWeekToDate,
+                    'total_upselling_day' => $totalUpsellingDay,
+                    'total_upselling_week_to_date' => $totalUpsellingWeekToDate,
                 ],
 
                 'labor' => 0,
@@ -932,10 +938,26 @@ class ReportsController extends Controller
 
     private function upsellingForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        return [
-            'sold_with_pizza_units' => $this->soldWithPizzaUnitsForRange($store, $start, $end),
-            'items' => $this->upsellingItemsForRange($store, $start, $end),
-        ];
+        return array_merge(
+            $this->soldWithPizzaUnitsForRange($store, $start, $end),
+            $this->upsellingItemsForRange($store, $start, $end)
+        );
+    }
+
+    private function totalUpsellingUnits(array $upselling): int
+    {
+        $excludedKeys = ['pizza_base', 'crazy_puffs', 'beverages'];
+        $total = 0;
+
+        foreach ($upselling as $key => $units) {
+            if (in_array((string) $key, $excludedKeys, true)) {
+                continue;
+            }
+
+            $total += (int) $units;
+        }
+
+        return $total;
     }
 
     private function soldWithPizzaUnitsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
@@ -987,26 +1009,25 @@ class ReportsController extends Controller
 
         $items = [];
         foreach (self::UPSELL_ITEM_IDS as $id) {
-            $items[$id] = [
-                'item_id' => (int) $id,
-                'menu_item_name' => '',
-                'units_sold' => 0,
-            ];
+            $items[$id] = 0;
         }
 
         foreach ($rows as $row) {
             $id = (string) $row->item_id;
-            if (!isset($items[$id])) {
+            if (!array_key_exists($id, $items)) {
                 continue;
             }
-            $items[$id] = [
-                'item_id' => (int) $id,
-                'menu_item_name' => (string) ($row->menu_item_name ?? ''),
-                'units_sold' => (int) ($row->units_sold ?? 0),
-            ];
+
+            $items[$id] = (int) ($row->units_sold ?? 0);
         }
 
-        return array_values($items);
+        $itemsByName = [];
+        foreach ($items as $id => $unitsSold) {
+            $name = self::UPSELL_ITEM_NAMES[$id] ?? $id;
+            $itemsByName[$name] = (int) $unitsSold;
+        }
+
+        return $itemsByName;
     }
 
     private function orderLineSource(CarbonImmutable $start, CarbonImmutable $end): Builder
