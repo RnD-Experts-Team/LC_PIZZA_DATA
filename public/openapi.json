@@ -3882,6 +3882,47 @@
                         }
                     }
                 }
+            },
+            "post": {
+                "tags": ["Goal Metrics"],
+                "summary": "Create a goal metric",
+                "operationId": "createGoalMetric",
+                "security": [{ "BearerAuth": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "maxLength": 255
+                                    }
+                                },
+                                "required": ["name"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Goal metric created",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/GoalMetric" }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
             }
         },
 

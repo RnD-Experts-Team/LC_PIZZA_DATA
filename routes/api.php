@@ -112,6 +112,7 @@ Route::prefix('tags')->middleware('auth.token.store')->group(function () {
 
 Route::prefix('goal-metrics')->middleware('auth.token.store')->group(function () {
     Route::get('/', [GoalMetricController::class, 'index']);
+    Route::post('/', [GoalMetricController::class, 'store']);
     Route::delete('/{goalMetric}', [GoalMetricController::class, 'destroy']);
 });
 
