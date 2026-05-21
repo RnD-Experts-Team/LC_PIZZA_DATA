@@ -11,12 +11,13 @@ use App\Services\Analytics\SummaryQueryService;
 use App\Services\Database\DatabaseRouter;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Models\Aggregation\DailyStoreSummary;
-
+use App\Models\GoalMetric;
 /**
  * DSPR Lite Report Controller
  *
@@ -31,6 +32,16 @@ class ReportsController extends Controller
      * 48 hours = 172800
      */
     private const CACHE_TTL = 172800;
+
+    private const UPSELL_ITEM_IDS = ['201128', '201106'];
+    private const UPSELL_ITEM_NAMES = [
+        '201128' => 'EMB Cheese',
+        '201106' => 'EMB Pepperoni',
+    ];
+    private const IN_STORE_BUCKET = [
+        'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
+        'fulfilled' => ['Register', 'Drive-Thru'],
+    ];
 
     public function __construct(
         private readonly SummaryQueryService $summaryQuery,
@@ -79,7 +90,8 @@ class ReportsController extends Controller
         $weekToDateTotalsAvg = $this->averageWeekToDateTotals($weekToDateTotals, $weekToDateDayCount);
         $weekToDateSalesTotals = $this->totalSalesByChannelForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateSalesTotalsAvg = $this->averageSalesByChannelTotals($weekToDateSalesTotals, $weekToDateDayCount);
-        $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5);
+        $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5, 'gross_sales');
+        $weekToDateTopItemsByCount = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5, 'quantity_sold');
         $weekToDatePortal = $this->portalMetricsForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDatePortalAvg = $this->portalMetricsAverage($weekToDatePortal, $weekToDateDayCount);
         $weekToDateDeposit = $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd);
@@ -90,6 +102,11 @@ class ReportsController extends Controller
             $weekToDateStart->toMutable(),
             $weekToDateEnd->toMutable()
         );
+
+        $upsellingDay = $this->upsellingForRange($store, $day, $day);
+        $upsellingWeekToDate = $this->upsellingForRange($store, $weekToDateStart, $weekToDateEnd);
+        $totalUpsellingDay = $this->totalUpsellingUnits($upsellingDay);
+        $totalUpsellingWeekToDate = $this->totalUpsellingUnits($upsellingWeekToDate);
 
         $totalSales = [
             'royalty_obligation' => 0,
@@ -146,7 +163,7 @@ class ReportsController extends Controller
                 'week_start' => $weekStart->toDateString(),
                 'week_end' => $weekEnd->toDateString(),
             ],
-
+            'goal_metrics' => $this->getGoalsForStoreDate($store, $date),
             'sales' => [
                 'this_week_by_day' => $this->salesByDay($store, $weekStart, $weekEnd),
                 'previous_week_by_day' => $this->salesByDay($store, $prevWeekStart, $prevWeekEnd),
@@ -157,11 +174,17 @@ class ReportsController extends Controller
             ],
 
             'top' => [
-                'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5),
+                'top_5_items_sales_for_day' => $this->topItemsForDay($store, $day, 5, 'gross_sales'),
                 'top_5_items_sales_week_to_date' => $weekToDateTopItems,
+                'top_5_items_sales_week_to_date_avg' => $this->averageTopItems($weekToDateTopItems, $weekToDateDayCount),
+
+                'top_5_items_count_for_day' => $this->topItemsForDay($store, $day, 5, 'quantity_sold'),
+                'top_5_items_count_week_to_date' => $weekToDateTopItemsByCount,
+                'top_5_items_count_week_to_date_avg' => $this->averageTopItems($weekToDateTopItemsByCount, $weekToDateDayCount),
 
                 'ingredients' => [
-                    'top_3_ingredients_used' => $this->topIngredientsForDay($store, $day),
+                    'top_5_ingredients_variance_high' => $this->topIngredientsForDay($store, $day, 5, 'desc'),
+                    'top_5_ingredients_variance_low' => $this->topIngredientsForDay($store, $day, 5, 'asc'),
 
                     'main_5_ingredients_usage' => $this->mainFiveIngredientsUsage($store, $day),
 
@@ -244,6 +267,13 @@ class ReportsController extends Controller
                 'hnr_week_to_date' => $this->hnrTotals($weekToDateTotals),
                 'hnr_week_to_date_avg' => $this->hnrTotalsAverage($weekToDateTotals, $weekToDateDayCount),
 
+                'upselling' => [
+                    'day' => $upsellingDay,
+                    'week_to_date' => $upsellingWeekToDate,
+                    'total_upselling_day' => $totalUpsellingDay,
+                    'total_upselling_week_to_date' => $totalUpsellingWeekToDate,
+                ],
+
                 'labor' => 0,
                 'labor_week_to_date' => 0,
                 'labor_week_to_date_avg' => 0,
@@ -271,7 +301,38 @@ class ReportsController extends Controller
     {
         return sprintf('reports:dspr-lite:%s:%s', strtolower($store), $date);
     }
+    private function getGoalsForStoreDate(string $store, string $date)
+    {
+        $targetDate = CarbonImmutable::parse($date)->startOfDay();
 
+        // Fetch GoalMetrics with relevant Goals in one query
+        $goalMetrics = GoalMetric::whereHas('goals', function ($query) use ($store, $targetDate) {
+            $query->where('store_id', $store)
+                ->whereDate('week_start_date', '<=', $targetDate)
+                ->whereDate('week_end_date', '>=', $targetDate);
+        })
+            ->with([
+                'goals' => function ($query) use ($store, $targetDate) {
+                    $query->where('store_id', $store)
+                        ->whereDate('week_start_date', '<=', $targetDate)
+                        ->whereDate('week_end_date', '>=', $targetDate);
+                }
+            ])
+            ->get();
+
+        return $goalMetrics->map(function ($metric) {
+            return [
+                'metric_id' => $metric->id,
+                'metric_name' => $metric->name,
+                'goals' => $metric->goals->map(fn($goal) => [
+                    'goal_id' => $goal->id,
+                    'week_start_date' => $goal->week_start_date->toDateString(),
+                    'week_end_date' => $goal->week_end_date->toDateString(),
+                    'goal' => $goal->goal,
+                ])->toArray(),
+            ];
+        })->toArray();
+    }
     // ---------------------------------------------------------------------
     // Validation
     // ---------------------------------------------------------------------
@@ -371,17 +432,24 @@ class ReportsController extends Controller
     // Top Items
     // ---------------------------------------------------------------------
 
-    private function topItemsForDay(string $store, CarbonImmutable $day, int $limit): array
-    {
-        return $this->topItemsForRange($store, $day, $day, $limit);
+    private function topItemsForDay(
+        string $store,
+        CarbonImmutable $day,
+        int $limit,
+        string $orderByField = 'gross_sales'
+    ): array {
+        return $this->topItemsForRange($store, $day, $day, $limit, $orderByField);
     }
 
     private function topItemsForRange(
         string $store,
         CarbonImmutable $start,
         CarbonImmutable $end,
-        int $limit
+        int $limit,
+        string $orderByField = 'gross_sales'
     ): array {
+        $orderByField = $orderByField === 'quantity_sold' ? 'quantity_sold' : 'gross_sales';
+
         $result = $this->intelligentAgg->fetchAggregatedData([
             'start_date' => $start->toDateString(),
             'end_date' => $end->toDateString(),
@@ -391,19 +459,44 @@ class ReportsController extends Controller
                 ['field' => 'quantity_sold', 'agg' => 'SUM', 'alias' => 'quantity_sold'],
             ],
             'filters' => ['franchise_store' => $store],
-            'order_by' => 'gross_sales DESC',
+            'order_by' => $orderByField . ' DESC',
             'limit' => $limit,
         ]);
 
         return $result['data'] ?? [];
     }
 
+    private function averageTopItems(array $items, int $days): array
+    {
+        if ($days <= 0) {
+            return $items;
+        }
+
+        return array_map(static function (array $item) use ($days) {
+            if (isset($item['quantity_sold'])) {
+                $item['quantity_sold'] = round((float) $item['quantity_sold'] / $days, 2);
+            }
+
+            if (isset($item['gross_sales'])) {
+                $item['gross_sales'] = round((float) $item['gross_sales'] / $days, 2);
+            }
+
+            return $item;
+        }, $items);
+    }
+
     // ---------------------------------------------------------------------
     // ✅ FIXED: Top Ingredients (uses correct schema)
     // ---------------------------------------------------------------------
 
-    private function topIngredientsForDay(string $store, CarbonImmutable $day): array
-    {
+    private function topIngredientsForDay(
+        string $store,
+        CarbonImmutable $day,
+        int $limit = 5,
+        string $direction = 'desc'
+    ): array {
+        $direction = strtolower($direction) === 'asc' ? 'asc' : 'desc';
+
         $queries = DatabaseRouter::routedQueries(
             'alta_inventory_ingredient_usage',
             $day->toMutable(),
@@ -415,12 +508,14 @@ class ReportsController extends Controller
             $union->unionAll($q);
         }
 
+        $varianceExpr = DB::raw('SUM(variance_qty) * SUM(ingredient_unit_cost)');
+
         return DB::query()
             ->fromSub($union, 'u')
             ->where('franchise_store', $store)
             ->groupBy('ingredient_id', 'ingredient_description')
-            ->orderByDesc(DB::raw('SUM(actual_usage)'))
-            ->limit(3)
+            ->orderBy($varianceExpr, $direction)
+            ->limit($limit)
             ->get([
                 'ingredient_id',
                 'ingredient_description',
@@ -467,8 +562,8 @@ class ReportsController extends Controller
             ];
         }
 
-        // Sort descending by usage
-        usort($merged, fn($a, $b) => $b['actual_usage'] <=> $a['actual_usage']);
+        // Sort descending by variance
+        usort($merged, fn($a, $b) => $b['variance_value'] <=> $a['variance_value']);
 
         return $merged;
     }
@@ -479,7 +574,7 @@ class ReportsController extends Controller
 
         $results = $this->fetchIngredientSet($store, $day, $ids);
 
-        usort($results, fn($a, $b) => $b['actual_usage'] <=> $a['actual_usage']);
+        usort($results, fn($a, $b) => $b['variance_value'] <=> $a['variance_value']);
 
         return $results;
     }
@@ -866,6 +961,124 @@ class ReportsController extends Controller
             ->where('franchise_store', $store)
             ->selectRaw('SUM(item_cost * quantity) as total_waste_cost')
             ->value('total_waste_cost') ?? 0.0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Upselling (in-store bucket only)
+    // ---------------------------------------------------------------------
+
+    private function upsellingForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        return array_merge(
+            $this->soldWithPizzaUnitsForRange($store, $start, $end),
+            $this->upsellingItemsForRange($store, $start, $end)
+        );
+    }
+
+    private function totalUpsellingUnits(array $upselling): int
+    {
+        $excludedKeys = ['pizza_base', 'crazy_puffs', 'beverages'];
+        $total = 0;
+
+        foreach ($upselling as $key => $units) {
+            if (in_array((string) $key, $excludedKeys, true)) {
+                continue;
+            }
+
+            $total += (int) $units;
+        }
+
+        return $total;
+    }
+
+    private function soldWithPizzaUnitsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $base = $this->applyInStoreBucketFilters(
+            $this->orderLineSource($start, $end)->where('franchise_store', $store)
+        );
+
+        $pizzaOrders = (clone $base)
+            ->whereNotNull('order_id')
+            ->where('is_pizza', 1)
+            ->select('order_id')
+            ->distinct();
+
+        $pizzaBase = (int) (clone $base)
+            ->where('is_pizza', 1)
+            ->sum('quantity');
+
+        $totals = (clone $base)
+            ->whereNotNull('order_id')
+            ->whereIn('order_id', $pizzaOrders)
+            ->selectRaw("\n                SUM(CASE WHEN item_id = '103001' THEN COALESCE(quantity, 0) ELSE 0 END) as crazy_bread,\n                SUM(CASE WHEN item_id IN ('101288', '101289') THEN COALESCE(quantity, 0) ELSE 0 END) as cookies,\n                SUM(CASE WHEN item_id = '103002' THEN COALESCE(quantity, 0) ELSE 0 END) as sauce,\n                SUM(CASE WHEN is_wings = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as wings,\n                SUM(CASE WHEN is_beverages = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as beverages,\n                SUM(CASE WHEN is_crazy_puffs = 1 THEN COALESCE(quantity, 0) ELSE 0 END) as crazy_puffs,\n                SUM(CASE WHEN item_id = '204100' THEN COALESCE(quantity, 0) ELSE 0 END) as bev_20oz,\n                SUM(CASE WHEN item_id = '204200' THEN COALESCE(quantity, 0) ELSE 0 END) as bev_2l,\n                SUM(CASE WHEN item_id IN ('203003', '103003') THEN COALESCE(quantity, 0) ELSE 0 END) as italian_cheese_bread\n            ")
+            ->first();
+
+        return [
+            'crazy_bread' => (int) ($totals->crazy_bread ?? 0),
+            'cookies' => (int) ($totals->cookies ?? 0),
+            'sauce' => (int) ($totals->sauce ?? 0),
+            'wings' => (int) ($totals->wings ?? 0),
+            'beverages' => (int) ($totals->beverages ?? 0),
+            'crazy_puffs' => (int) ($totals->crazy_puffs ?? 0),
+            'bev_20oz' => (int) ($totals->bev_20oz ?? 0),
+            'bev_2l' => (int) ($totals->bev_2l ?? 0),
+            'italian_cheese_bread' => (int) ($totals->italian_cheese_bread ?? 0),
+            'pizza_base' => $pizzaBase,
+        ];
+    }
+
+    private function upsellingItemsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $rows = $this->applyInStoreBucketFilters(
+            $this->orderLineSource($start, $end)
+                ->where('franchise_store', $store)
+                ->whereIn('item_id', self::UPSELL_ITEM_IDS)
+        )
+            ->selectRaw('item_id, MAX(menu_item_name) as menu_item_name, SUM(COALESCE(quantity, 0)) as units_sold')
+            ->groupBy('item_id')
+            ->get();
+
+        $items = [];
+        foreach (self::UPSELL_ITEM_IDS as $id) {
+            $items[$id] = 0;
+        }
+
+        foreach ($rows as $row) {
+            $id = (string) $row->item_id;
+            if (!array_key_exists($id, $items)) {
+                continue;
+            }
+
+            $items[$id] = (int) ($row->units_sold ?? 0);
+        }
+
+        $itemsByName = [];
+        foreach ($items as $id => $unitsSold) {
+            $name = self::UPSELL_ITEM_NAMES[$id] ?? $id;
+            $itemsByName[$name] = (int) $unitsSold;
+        }
+
+        return $itemsByName;
+    }
+
+    private function orderLineSource(CarbonImmutable $start, CarbonImmutable $end): Builder
+    {
+        $queries = DatabaseRouter::routedQueries('order_line', $start->toMutable(), $end->toMutable());
+
+        $union = array_shift($queries);
+        foreach ($queries as $q) {
+            $union->unionAll($q);
+        }
+
+        // Union hot + archive order_line tables for the requested range.
+        return DB::query()->fromSub($union, 'ol');
+    }
+
+    private function applyInStoreBucketFilters(Builder $query): Builder
+    {
+        return $query
+            ->whereIn('order_placed_method', self::IN_STORE_BUCKET['placed'])
+            ->whereIn('order_fulfilled_method', self::IN_STORE_BUCKET['fulfilled']);
     }
 
 
