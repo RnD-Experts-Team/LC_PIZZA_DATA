@@ -161,7 +161,8 @@ class ReportsController extends Controller
                 'top_5_items_sales_week_to_date' => $weekToDateTopItems,
 
                 'ingredients' => [
-                    'top_3_ingredients_used' => $this->topIngredientsForDay($store, $day),
+                    'top_5_ingredients_variance_high' => $this->topIngredientsForDay($store, $day, 5, 'desc'),
+                    'top_5_ingredients_variance_low' => $this->topIngredientsForDay($store, $day, 5, 'asc'),
 
                     'main_5_ingredients_usage' => $this->mainFiveIngredientsUsage($store, $day),
 
@@ -402,8 +403,14 @@ class ReportsController extends Controller
     // ✅ FIXED: Top Ingredients (uses correct schema)
     // ---------------------------------------------------------------------
 
-    private function topIngredientsForDay(string $store, CarbonImmutable $day): array
-    {
+    private function topIngredientsForDay(
+        string $store,
+        CarbonImmutable $day,
+        int $limit = 5,
+        string $direction = 'desc'
+    ): array {
+        $direction = strtolower($direction) === 'asc' ? 'asc' : 'desc';
+
         $queries = DatabaseRouter::routedQueries(
             'alta_inventory_ingredient_usage',
             $day->toMutable(),
@@ -415,12 +422,14 @@ class ReportsController extends Controller
             $union->unionAll($q);
         }
 
+        $varianceExpr = DB::raw('SUM(variance_qty) * SUM(ingredient_unit_cost)');
+
         return DB::query()
             ->fromSub($union, 'u')
             ->where('franchise_store', $store)
             ->groupBy('ingredient_id', 'ingredient_description')
-            ->orderByDesc(DB::raw('SUM(actual_usage)'))
-            ->limit(3)
+            ->orderBy($varianceExpr, $direction)
+            ->limit($limit)
             ->get([
                 'ingredient_id',
                 'ingredient_description',
@@ -467,8 +476,8 @@ class ReportsController extends Controller
             ];
         }
 
-        // Sort descending by usage
-        usort($merged, fn($a, $b) => $b['actual_usage'] <=> $a['actual_usage']);
+        // Sort descending by variance
+        usort($merged, fn($a, $b) => $b['variance_value'] <=> $a['variance_value']);
 
         return $merged;
     }
@@ -479,7 +488,7 @@ class ReportsController extends Controller
 
         $results = $this->fetchIngredientSet($store, $day, $ids);
 
-        usort($results, fn($a, $b) => $b['actual_usage'] <=> $a['actual_usage']);
+        usort($results, fn($a, $b) => $b['variance_value'] <=> $a['variance_value']);
 
         return $results;
     }
