@@ -21,6 +21,14 @@
         {
             "name": "Manual Import",
             "description": "Manual CSV and ZIP data imports"
+        },
+        {
+            "name": "Goal Metrics",
+            "description": "Metric definitions used as goal types"
+        },
+        {
+            "name": "Goals",
+            "description": "Store-scoped weekly targets for goal metrics"
         }
     ],
     "components": {
@@ -1600,6 +1608,46 @@
                     "message": { "type": "string" }
                 },
                 "required": ["success", "message"]
+            },
+
+            "GoalMetric": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "readOnly": true },
+                    "name": { "type": "string", "maxLength": 255 },
+                    "created_at": { "type": "string", "format": "date-time", "nullable": true },
+                    "updated_at": { "type": "string", "format": "date-time", "nullable": true }
+                },
+                "required": ["id", "name"]
+            },
+
+            "Goal": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "readOnly": true },
+                    "goal_metric_id": { "type": "integer" },
+                    "store_id": { "type": "string" },
+                    "week_start_date": { "type": "string", "format": "date" },
+                    "week_end_date": { "type": "string", "format": "date" },
+                    "goal": { "type": "number", "description": "Decimal goal value (up to 4 decimal places)" },
+                    "metric": { "$ref": "#/components/schemas/GoalMetric" },
+                    "created_at": { "type": "string", "format": "date-time", "nullable": true },
+                    "updated_at": { "type": "string", "format": "date-time", "nullable": true }
+                },
+                "required": ["id", "goal_metric_id", "store_id", "week_start_date", "week_end_date", "goal"]
+            },
+
+            "GoalPagination": {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/Goal" }
+                    },
+                    "links": { "$ref": "#/components/schemas/PaginationLinks" },
+                    "meta": { "$ref": "#/components/schemas/PaginationMeta" }
+                },
+                "required": ["data", "links", "meta"]
             }
         }
     },
@@ -3808,6 +3856,304 @@
                                     "type": "object",
                                     "additionalProperties": true
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        "/goal-metrics": {
+            "get": {
+                "tags": ["Goal Metrics"],
+                "summary": "List all goal metrics",
+                "operationId": "listGoalMetrics",
+                "security": [{ "BearerAuth": [] }],
+                "responses": {
+                    "200": {
+                        "description": "List of goal metrics",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": { "$ref": "#/components/schemas/GoalMetric" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        "/goal-metrics/{goalMetric}": {
+            "delete": {
+                "tags": ["Goal Metrics"],
+                "summary": "Delete a goal metric",
+                "operationId": "deleteGoalMetric",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    {
+                        "name": "goalMetric",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "integer" }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Goal metric deleted",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": { "type": "string", "example": "Goal metric deleted." }
+                                    },
+                                    "required": ["message"]
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Goal metric not found",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        "/stores/{store_id}/goals": {
+            "get": {
+                "tags": ["Goals"],
+                "summary": "List goals for a store",
+                "operationId": "listGoals",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    {
+                        "name": "store_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    },
+                    {
+                        "name": "from",
+                        "in": "query",
+                        "schema": { "type": "string", "format": "date" },
+                        "description": "Filter goals where week_start_date >= from (YYYY-MM-DD)"
+                    },
+                    {
+                        "name": "to",
+                        "in": "query",
+                        "schema": { "type": "string", "format": "date" },
+                        "description": "Filter goals where week_end_date <= to (YYYY-MM-DD)"
+                    },
+                    {
+                        "name": "goal_metric_id",
+                        "in": "query",
+                        "schema": { "type": "integer" },
+                        "description": "Filter by goal metric ID"
+                    },
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "schema": { "type": "integer", "minimum": 1 }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "schema": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated list of goals",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/GoalPagination" }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": ["Goals"],
+                "summary": "Create a goal",
+                "operationId": "createGoal",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    {
+                        "name": "store_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "goal_metric_id": { "type": "integer" },
+                                    "week_start_date": { "type": "string", "format": "date" },
+                                    "week_end_date": { "type": "string", "format": "date" },
+                                    "goal": { "type": "number", "minimum": 0 }
+                                },
+                                "required": ["goal_metric_id", "week_start_date", "week_end_date", "goal"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Goal created",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Goal" }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        "/stores/{store_id}/goals/{goal}": {
+            "put": {
+                "tags": ["Goals"],
+                "summary": "Update a goal",
+                "operationId": "updateGoal",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    {
+                        "name": "store_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    },
+                    {
+                        "name": "goal",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "integer" }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "goal": { "type": "number", "minimum": 0 }
+                                },
+                                "required": ["goal"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Goal updated",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Goal" }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — goal belongs to a different store",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Goal not found",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": ["Goals"],
+                "summary": "Delete a goal",
+                "operationId": "deleteGoal",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    {
+                        "name": "store_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    },
+                    {
+                        "name": "goal",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "integer" }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Goal deleted",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": { "type": "string", "example": "Goal deleted." }
+                                    },
+                                    "required": ["message"]
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — goal belongs to a different store",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Goal not found",
+                        "content": {
+                            "application/json": {
+                                "schema": { "type": "object", "additionalProperties": true }
                             }
                         }
                     }

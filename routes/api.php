@@ -11,6 +11,8 @@ use App\Http\Controllers\API\{
     ManualCsvImportController,
     EmployeeDebriefController,
     TagController,
+    GoalMetricController,
+    GoalController,
 };
 
 
@@ -101,4 +103,21 @@ Route::prefix('tags')->middleware('auth.token.store')->group(function () {
     Route::post('/', [TagController::class, 'store']);
     Route::delete('/bulk', [TagController::class, 'bulkDelete']);
     Route::delete('/{tag}', [TagController::class, 'destroy']);
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// GOALS ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::prefix('goal-metrics')->middleware('auth.token.store')->group(function () {
+    Route::get('/', [GoalMetricController::class, 'index']);
+    Route::delete('/{goalMetric}', [GoalMetricController::class, 'destroy']);
+});
+
+Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(function () {
+    Route::get('/', [GoalController::class, 'index']);
+    Route::post('/', [GoalController::class, 'store']);
+    Route::put('/{goal}', [GoalController::class, 'update']);
+    Route::delete('/{goal}', [GoalController::class, 'destroy']);
 });

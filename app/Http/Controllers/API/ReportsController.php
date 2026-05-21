@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Models\Aggregation\DailyStoreSummary;
-
+use App\Models\GoalMetric;
 /**
  * DSPR Lite Report Controller
  *
@@ -147,7 +147,7 @@ class ReportsController extends Controller
                 'week_start' => $weekStart->toDateString(),
                 'week_end' => $weekEnd->toDateString(),
             ],
-
+            'goal_metrics' => $this->getGoalsForStoreDate($store, $date),
             'sales' => [
                 'this_week_by_day' => $this->salesByDay($store, $weekStart, $weekEnd),
                 'previous_week_by_day' => $this->salesByDay($store, $prevWeekStart, $prevWeekEnd),
@@ -278,7 +278,38 @@ class ReportsController extends Controller
     {
         return sprintf('reports:dspr-lite:%s:%s', strtolower($store), $date);
     }
+    private function getGoalsForStoreDate(string $store, string $date)
+    {
+        $targetDate = CarbonImmutable::parse($date)->startOfDay();
 
+        // Fetch GoalMetrics with relevant Goals in one query
+        $goalMetrics = GoalMetric::whereHas('goals', function ($query) use ($store, $targetDate) {
+            $query->where('store_id', $store)
+                ->whereDate('week_start_date', '<=', $targetDate)
+                ->whereDate('week_end_date', '>=', $targetDate);
+        })
+            ->with([
+                'goals' => function ($query) use ($store, $targetDate) {
+                    $query->where('store_id', $store)
+                        ->whereDate('week_start_date', '<=', $targetDate)
+                        ->whereDate('week_end_date', '>=', $targetDate);
+                }
+            ])
+            ->get();
+
+        return $goalMetrics->map(function ($metric) {
+            return [
+                'metric_id' => $metric->id,
+                'metric_name' => $metric->name,
+                'goals' => $metric->goals->map(fn($goal) => [
+                    'goal_id' => $goal->id,
+                    'week_start_date' => $goal->week_start_date->toDateString(),
+                    'week_end_date' => $goal->week_end_date->toDateString(),
+                    'goal' => $goal->goal,
+                ])->toArray(),
+            ];
+        })->toArray();
+    }
     // ---------------------------------------------------------------------
     // Validation
     // ---------------------------------------------------------------------
@@ -383,8 +414,7 @@ class ReportsController extends Controller
         CarbonImmutable $day,
         int $limit,
         string $orderByField = 'gross_sales'
-    ): array
-    {
+    ): array {
         return $this->topItemsForRange($store, $day, $day, $limit, $orderByField);
     }
 
