@@ -72,8 +72,8 @@ class SendDueKeyNotifications extends Command
                                 'type' => 'data_entry_key_due_soon',
 
                                 'title' => 'Debrief due soon',
-                                'body' => "Debrief ({$rule->key?->label}) is due at {$dueTimeForMessage} For Store {$rule->store?->name}.",
-                                'action_url' => "/data-entries/keys/{$rule->key_id}?date={$today->toDateString()}"
+                                'body' => "Debrief ({$rule->key?->label}) is due at {$dueTimeForMessage} For Store {$rule->store_id}.",
+                                'action_url' => "/data-entries/keys/{$rule->key_id}?date={$today->toDateString()}&store_id={$rule->store_id}",
                             ],
                         ];
                     })->values()->all(),
