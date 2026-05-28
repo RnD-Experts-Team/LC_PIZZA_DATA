@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Models\Aggregation\DailyStoreSummary;
 use App\Models\GoalMetric;
+use App\Models\EnteredKeyValue;
 /**
  * DSPR Lite Report Controller
  *
@@ -38,6 +39,7 @@ class ReportsController extends Controller
         '201128' => 'EMB Cheese',
         '201106' => 'EMB Pepperoni',
     ];
+    private const LABOR_ENTERED_KEY_ID = 23;
     private const IN_STORE_BUCKET = [
         'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
         'fulfilled' => ['Register', 'Drive-Thru'],
@@ -103,6 +105,36 @@ class ReportsController extends Controller
             $weekToDateEnd->toMutable()
         );
 
+        $thisWeekByDay = $this->salesByDay($store, $weekStart, $weekEnd);
+        $previousWeekByDay = $this->salesByDay($store, $prevWeekStart, $prevWeekEnd);
+        $lastYearWeekByDay = $this->salesByDay($store, $lastYearWeekStart, $lastYearWeekEnd);
+
+        $thisWeekTotal = $this->sumSalesByDay($thisWeekByDay);
+        $previousWeekTotal = $this->sumSalesByDay($previousWeekByDay);
+        $lastYearWeekTotal = $this->sumSalesByDay($lastYearWeekByDay);
+
+        $daySales = (float) ($thisWeekByDay[$day->toDateString()] ?? 0.0);
+        $weekToDateSalesTotal = $this->sumSalesByDayRange($thisWeekByDay, $weekToDateStart, $weekToDateEnd);
+        $weekToDateSalesAvg = $this->averageValue($weekToDateSalesTotal, $weekToDateDayCount);
+
+        $laborValueDay = $this->enteredKeyValueSumForRange(
+            $store,
+            self::LABOR_ENTERED_KEY_ID,
+            $day,
+            $day
+        );
+        $laborWeekToDateSum = $this->enteredKeyValueSumForRange(
+            $store,
+            self::LABOR_ENTERED_KEY_ID,
+            $weekToDateStart,
+            $weekToDateEnd
+        );
+        $laborWeekToDateAvgValue = $this->averageValue($laborWeekToDateSum, $weekToDateDayCount);
+
+        $laborPercent = $this->percentOfSales($laborValueDay, $daySales);
+        $laborWeekToDatePercent = $this->percentOfSales($laborWeekToDateSum, $weekToDateSalesTotal);
+        $laborWeekToDateAvgPercent = $this->percentOfSales($laborWeekToDateAvgValue, $weekToDateSalesAvg);
+
         $upsellingDay = $this->upsellingForRange($store, $day, $day);
         $upsellingWeekToDate = $this->upsellingForRange($store, $weekToDateStart, $weekToDateEnd);
         $totalUpsellingDay = $this->totalUpsellingUnits($upsellingDay);
@@ -165,12 +197,12 @@ class ReportsController extends Controller
             ],
             'goal_metrics' => $this->getGoalsForStoreDate($store, $date),
             'sales' => [
-                'this_week_by_day' => $this->salesByDay($store, $weekStart, $weekEnd),
-                'previous_week_by_day' => $this->salesByDay($store, $prevWeekStart, $prevWeekEnd),
-                'same_week_last_year_by_day' => $this->salesByDay($store, $lastYearWeekStart, $lastYearWeekEnd),
-                'this_week_total' => $this->salesTotal($store, $weekStart, $weekEnd),
-                'previous_week_total' => $this->salesTotal($store, $prevWeekStart, $prevWeekEnd),
-                'same_week_last_year_total' => $this->salesTotal($store, $lastYearWeekStart, $lastYearWeekEnd),
+                'this_week_by_day' => $thisWeekByDay,
+                'previous_week_by_day' => $previousWeekByDay,
+                'same_week_last_year_by_day' => $lastYearWeekByDay,
+                'this_week_total' => $thisWeekTotal,
+                'previous_week_total' => $previousWeekTotal,
+                'same_week_last_year_total' => $lastYearWeekTotal,
             ],
 
             'top' => [
@@ -274,9 +306,9 @@ class ReportsController extends Controller
                     'total_upselling_week_to_date' => $totalUpsellingWeekToDate,
                 ],
 
-                'labor' => 0,
-                'labor_week_to_date' => 0,
-                'labor_week_to_date_avg' => 0,
+                'labor' => $laborPercent,
+                'labor_week_to_date' => $laborWeekToDatePercent,
+                'labor_week_to_date_avg' => $laborWeekToDateAvgPercent,
 
                 'portal' => array_merge($this->portalMetrics($store, $day), [
                     'week_to_date' => $weekToDatePortal,
@@ -377,6 +409,31 @@ class ReportsController extends Controller
         }
 
         return $out;
+    }
+
+    private function sumSalesByDay(array $salesByDay): float
+    {
+        $total = 0.0;
+
+        foreach ($salesByDay as $value) {
+            $total += (float) $value;
+        }
+
+        return $total;
+    }
+
+    private function sumSalesByDayRange(
+        array $salesByDay,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
+        $total = 0.0;
+
+        for ($d = $start; $d->lte($end); $d = $d->addDay()) {
+            $total += (float) ($salesByDay[$d->toDateString()] ?? 0.0);
+        }
+
+        return $total;
     }
 
     private function salesTotal(string $store, CarbonImmutable $start, CarbonImmutable $end): float
@@ -780,6 +837,28 @@ class ReportsController extends Controller
             'ubereats_sales' => $this->averageValue((float) ($totals['ubereats_sales'] ?? 0), $days),
             'grubhub_sales' => $this->averageValue((float) ($totals['grubhub_sales'] ?? 0), $days),
         ];
+    }
+
+    private function enteredKeyValueSumForRange(
+        string $store,
+        int $keyId,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
+        return (float) EnteredKeyValue::query()
+            ->where('store_id', $store)
+            ->where('key_id', $keyId)
+            ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->sum('value_number');
+    }
+
+    private function percentOfSales(float $value, float $sales): float
+    {
+        if ($sales <= 0) {
+            return 0.0;
+        }
+
+        return round(($value / $sales) * 100, 2);
     }
 
     private function averageWeekToDateTotals(array $totals, int $days): array
