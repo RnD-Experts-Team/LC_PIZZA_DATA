@@ -15,10 +15,15 @@ class User extends Authenticatable
         'id',
         'name',
         'email',
+        'image_path',
     ];
 
     protected $hidden = [
         'remember_token',
+    ];
+
+    protected $appends = [
+        'image_url',
     ];
 
     public function storeRoles(): HasMany
@@ -48,5 +53,41 @@ class User extends Authenticatable
         return $q->where(function ($qq) use ($storeId) {
             $qq->whereNull('store_id')->orWhere('store_id', (int) $storeId);
         })->exists();
+    }
+
+    public function getImageUrlAttribute(): ?string
+    {
+        $path = $this->image_path;
+
+        if (!$path) {
+            return null;
+        }
+
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+            return $path;
+        }
+
+        if (str_starts_with($path, 'storage/') || str_starts_with($path, '/storage/')) {
+            return $this->authUrl($path);
+        }
+
+        $baseUrl = rtrim((string) config('services.auth_server.base_url'), '/');
+
+        if ($baseUrl === '') {
+            return url($path);
+        }
+
+        return $baseUrl . '/storage/' . ltrim($path, '/');
+    }
+
+    protected function authUrl(string $path): string
+    {
+        $baseUrl = rtrim((string) config('services.auth_server.base_url'), '/');
+
+        if ($baseUrl === '') {
+            return url($path);
+        }
+
+        return $baseUrl . '/' . ltrim($path, '/');
     }
 }
