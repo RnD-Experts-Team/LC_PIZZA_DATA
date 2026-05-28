@@ -24,13 +24,15 @@ class UserCreatedHandler implements EventHandlerInterface
 
         $name = (string) data_get($userPayload, 'name', 'Unknown');
 
-        DB::transaction(function () use ($id, $name, $email) {
+        $image_path = (string) data_get($userPayload, 'image_path', '');
+        DB::transaction(function () use ($id, $name, $email, $image_path) {
             // Only replicate what the event gives us; do not invent password/role/etc
             User::query()->updateOrCreate(
                 ['id' => $id],
                 [
-                    'name'  => $name,
+                    'name' => $name,
                     'email' => $email,
+                    'image_path' => $image_path,
                 ]
             );
         });
@@ -39,22 +41,28 @@ class UserCreatedHandler implements EventHandlerInterface
     private function extractUserPayload(array $event): array
     {
         $user = data_get($event, 'data.user');
-        if (is_array($user)) return $user;
+        if (is_array($user))
+            return $user;
 
         $user = data_get($event, 'user');
-        if (is_array($user)) return $user;
+        if (is_array($user))
+            return $user;
 
         $user = data_get($event, 'payload.user');
-        if (is_array($user)) return $user;
+        if (is_array($user))
+            return $user;
 
         throw new \Exception('UserCreatedHandler: user payload not found in event');
     }
 
     private function asInt(mixed $v): int
     {
-        if (is_int($v)) return $v;
-        if (is_string($v) && ctype_digit($v)) return (int) $v;
-        if (is_numeric($v)) return (int) $v;
+        if (is_int($v))
+            return $v;
+        if (is_string($v) && ctype_digit($v))
+            return (int) $v;
+        if (is_numeric($v))
+            return (int) $v;
         return 0;
     }
 }

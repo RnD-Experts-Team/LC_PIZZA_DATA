@@ -29,10 +29,10 @@ class UserUpdatedHandler implements EventHandlerInterface
         }
 
         // Extract safe scalar "to" values
-        $nameTo  = $this->extractDeltaToScalar($changed, 'name');
+        $nameTo = $this->extractDeltaToScalar($changed, 'name');
         $emailTo = $this->extractDeltaToScalar($changed, 'email');
-
-        DB::transaction(function () use ($id, $nameTo, $emailTo) {
+        $imagePathTo = $this->extractDeltaToScalar($changed, 'image_path');
+        DB::transaction(function () use ($id, $nameTo, $emailTo, $imagePathTo) {
             // IMPORTANT: do not create users here (bus is source of truth)
             $exists = User::query()->whereKey($id)->exists();
             if (!$exists) {
@@ -47,6 +47,10 @@ class UserUpdatedHandler implements EventHandlerInterface
 
             if ($emailTo !== null) {
                 $update['email'] = $emailTo;
+            }
+
+            if ($imagePathTo !== null) {
+                $update['image_path'] = $imagePathTo;
             }
 
             if (empty($update)) {
@@ -120,9 +124,12 @@ class UserUpdatedHandler implements EventHandlerInterface
 
     private function asInt(mixed $v): int
     {
-        if (is_int($v)) return $v;
-        if (is_string($v) && ctype_digit($v)) return (int) $v;
-        if (is_numeric($v)) return (int) $v;
+        if (is_int($v))
+            return $v;
+        if (is_string($v) && ctype_digit($v))
+            return (int) $v;
+        if (is_numeric($v))
+            return (int) $v;
         return 0;
     }
 }
