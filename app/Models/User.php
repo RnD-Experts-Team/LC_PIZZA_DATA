@@ -71,7 +71,7 @@ class User extends Authenticatable
             return $this->authUrl($path);
         }
 
-        $baseUrl = rtrim((string) config('services.auth_server.base_url'), '/');
+        $baseUrl = $this->authBaseUrl();
 
         if ($baseUrl === '') {
             return url($path);
@@ -82,12 +82,25 @@ class User extends Authenticatable
 
     protected function authUrl(string $path): string
     {
-        $baseUrl = rtrim((string) config('services.auth_server.base_url'), '/');
+        $baseUrl = $this->authBaseUrl();
 
         if ($baseUrl === '') {
             return url($path);
         }
 
         return $baseUrl . '/' . ltrim($path, '/');
+    }
+
+    protected function authBaseUrl(): string
+    {
+        $baseUrl = rtrim((string) config('services.auth_server.base_url'), '/');
+
+        if ($baseUrl === '') {
+            return '';
+        }
+
+        $baseUrl = preg_replace('~/api(?:/.*)?$~i', '', $baseUrl);
+
+        return rtrim((string) $baseUrl, '/');
     }
 }
