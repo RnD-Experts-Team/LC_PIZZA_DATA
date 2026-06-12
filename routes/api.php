@@ -35,8 +35,12 @@ Route::prefix('export')->group(function () {
 });
 
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware('auth.token.store');
-
-
+Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware('auth.token.store');
+Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware('auth.token.store');
+Route::get('/reports/channel-sales/{store}/{date}', [ReportsController::class, 'channelSales'])->middleware('auth.token.store');
+Route::get('/reports/phone-and-adjusted-sales/{store}/{date}', [ReportsController::class, 'phoneAndAdjustedSales'])->middleware('auth.token.store');
+Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'cashControl'])->middleware('auth.token.store');
+Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 

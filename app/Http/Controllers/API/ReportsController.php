@@ -39,6 +39,11 @@ class ReportsController extends Controller
         '201128' => 'EMB Cheese',
         '201106' => 'EMB Pepperoni',
     ];
+    private const LTO_ITEM_IDS = [
+        // Add LTO item IDs here, e.g. '201234', '205678'
+        '204380'
+    ];
+
     private const LABOR_ENTERED_KEY_ID = 23;
     private const IN_STORE_BUCKET = [
         'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
@@ -61,6 +66,78 @@ class ReportsController extends Controller
         $payload = $this->buildReport($store, $date);
 
         return response()->json($payload);
+    }
+
+    /**
+     * GET /api/reports/channel-sales/{store}/{date}
+     */
+    public function channelSales(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $prevWeekStart = $weekStart->subWeeks(1);
+        $prevWeekEnd = $weekEnd->subWeeks(1);
+
+        return response()->json([
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'current_week' => [
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $day->toDateString(),
+                ...$this->channelSalesForRange($store, $weekStart, $day),
+            ],
+            'previous_week' => [
+                'week_start' => $prevWeekStart->toDateString(),
+                'week_end' => $prevWeekEnd->toDateString(),
+                ...$this->channelSalesForRange($store, $prevWeekStart, $prevWeekEnd),
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/reports/lto/{store}/{date}
+     */
+    public function ltoReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+        return response()->json($this->buildLtoReport($store, $date));
+    }
+
+    /**
+     * GET /api/reports/phone-and-adjusted-sales/{store}/{date}
+     */
+    public function phoneAndAdjustedSales(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildPhoneAndAdjustedSalesReport($store, $date));
+    }
+
+    /**
+     * GET /api/reports/portal-weekly/{store}/{date}
+     */
+    public function portalWeekly(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildPortalWeeklyReport($store, $date));
+    }
+
+    /**
+     * GET /api/reports/customer-count-and-sales/{store}/{date}
+     */
+    public function customerCountAndSales(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildCustomerCountAndSalesReport($store, $date));
     }
 
     // ---------------------------------------------------------------------
@@ -952,6 +1029,70 @@ class ReportsController extends Controller
         ];
     }
 
+    private function channelSalesForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $totals = $this->totalSalesByChannelForRange($store, $start, $end);
+        $split = $this->websiteAndMobileSplitForRange($store, $start, $end);
+
+        return [
+            'royalty_obligation' => $totals['royalty_obligation'],
+            'phone_sales' => $totals['phone_sales'],
+            'call_center_sales' => $totals['call_center_sales'],
+            'drive_thru_sales' => $totals['drive_thru_sales'],
+            'website_sales' => $split['website_sales'],
+            'mobile_sales' => $split['mobile_sales'],
+            'doordash_sales' => $totals['doordash_sales'],
+            'ubereats_sales' => $totals['ubereats_sales'],
+            'grubhub_sales' => $totals['grubhub_sales'],
+        ];
+    }
+
+    private function websiteAndMobileSplitForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
+
+        $union = array_shift($queries);
+        foreach ($queries as $q) {
+            $union->unionAll($q);
+        }
+
+        $row = DB::query()
+            ->fromSub($union, 'd')
+            ->where('franchise_store', $store)
+            ->whereIn('order_placed_method', ['Website', 'Mobile'])
+            ->selectRaw("
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN royalty_obligation ELSE 0 END), 0) as website_in_store,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation ELSE 0 END), 0) as website_delivery,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN royalty_obligation ELSE 0 END), 0) as mobile_in_store,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method = 'Delivery' THEN royalty_obligation ELSE 0 END), 0) as mobile_delivery
+            ")
+            ->first();
+
+        $webIn = round((float) ($row->website_in_store ?? 0), 2);
+        $webDel = round((float) ($row->website_delivery ?? 0), 2);
+        $mobIn = round((float) ($row->mobile_in_store ?? 0), 2);
+        $mobDel = round((float) ($row->mobile_delivery ?? 0), 2);
+
+        return [
+            'website_sales' => [
+                'in_store' => $webIn,
+                'delivery' => $webDel,
+                'total' => round($webIn + $webDel, 2),
+            ],
+            'mobile_sales' => [
+                'in_store' => $mobIn,
+                'delivery' => $mobDel,
+                'total' => round($mobIn + $mobDel, 2),
+            ],
+        ];
+    }
+
     // ---------------------------------------------------------------------
     // Deposit
     // ---------------------------------------------------------------------
@@ -1199,6 +1340,402 @@ class ReportsController extends Controller
             'portal_on_time_orders' => $onTime,
             'put_into_portal_percent' => $eligible > 0 ? round(($used / $eligible) * 100, 2) : 0,
             'in_portal_on_time_percent' => $used > 0 ? round(($onTime / $used) * 100, 2) : 0,
+        ];
+    }
+
+    // ---------------------------------------------------------------------
+    // LTO Report
+    // ---------------------------------------------------------------------
+
+    private function buildLtoReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+        $prevWeekStart = $weekStart->subWeeks(1);
+        $prevWeekEnd = $weekEnd->subWeeks(1);
+
+        $mWeekStart = $weekStart->toMutable();
+        $mDay = $day->toMutable();
+        $mPrevWeekStart = $prevWeekStart->toMutable();
+        $mPrevWeekEnd = $prevWeekEnd->toMutable();
+
+        $storeTotalSales = round((float) $this->summaryQuery->getSales($store, $mWeekStart, $mDay), 2);
+        $storeTotalQuantity = $this->storeTotalQuantityForRange($store, $weekStart, $day);
+
+        $items = [];
+        $totalLtoSales = 0.0;
+        $totalLtoQty = 0;
+
+        foreach (self::LTO_ITEM_IDS as $itemId) {
+            $id = (string) $itemId;
+            $sales = round((float) $this->summaryQuery->getItemSales($store, $mWeekStart, $mDay, $id), 2);
+            $qty = (int) $this->summaryQuery->getItemQuantity($store, $mWeekStart, $mDay, $id);
+            $prevQty = (int) $this->summaryQuery->getItemQuantity($store, $mPrevWeekStart, $mPrevWeekEnd, $id);
+
+            $totalLtoSales += $sales;
+            $totalLtoQty += $qty;
+
+            $items[] = [
+                'item_id' => $id,
+                'current_week_sales' => $sales,
+                'current_week_quantity' => $qty,
+                'previous_week_quantity' => $prevQty,
+                'pct_of_store_sales' => $storeTotalSales > 0
+                    ? round($sales / $storeTotalSales * 100, 2) : 0.0,
+                'pct_of_store_quantity' => $storeTotalQuantity > 0
+                    ? round($qty / $storeTotalQuantity * 100, 2) : 0.0,
+            ];
+        }
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $day->toDateString(),
+            ],
+            'store_totals' => [
+                'total_sales' => $storeTotalSales,
+                'total_quantity' => $storeTotalQuantity,
+            ],
+            'lto_totals' => [
+                'total_sales' => round($totalLtoSales, 2),
+                'total_quantity' => $totalLtoQty,
+                'pct_of_store_sales' => $storeTotalSales > 0
+                    ? round($totalLtoSales / $storeTotalSales * 100, 2) : 0.0,
+                'pct_of_store_quantity' => $storeTotalQuantity > 0
+                    ? round($totalLtoQty / $storeTotalQuantity * 100, 2) : 0.0,
+            ],
+            'items' => $items,
+        ];
+    }
+
+    private function storeTotalQuantityForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): int
+    {
+        $mStart = $start->toMutable();
+        $mEnd = $end->toMutable();
+
+        return $this->summaryQuery->getPizzaQuantity($store, $mStart, $mEnd)
+            + $this->summaryQuery->getHnrQuantity($store, $mStart, $mEnd)
+            + $this->summaryQuery->getBreadQuantity($store, $mStart, $mEnd)
+            + $this->summaryQuery->getWingsQuantity($store, $mStart, $mEnd)
+            + $this->summaryQuery->getBeveragesQuantity($store, $mStart, $mEnd)
+            + $this->summaryQuery->getOtherFoodsQuantity($store, $mStart, $mEnd);
+    }
+
+    // ---------------------------------------------------------------------
+    // Portal Weekly
+    // ---------------------------------------------------------------------
+
+    private function buildPortalWeeklyReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $weeks = [];
+
+        // Current week: WTD (weekStart → $day)
+        $weeks[] = [
+            'week_start' => $weekStart->toDateString(),
+            'week_end' => $day->toDateString(),
+            ...$this->portalMetricsForRange($store, $weekStart, $day),
+        ];
+
+        // 7 previous complete weeks
+        for ($i = 1; $i <= 7; $i++) {
+            $start = $weekStart->subWeeks($i);
+            $end = $weekEnd->subWeeks($i);
+            $weeks[] = [
+                'week_start' => $start->toDateString(),
+                'week_end' => $end->toDateString(),
+                ...$this->portalMetricsForRange($store, $start, $end),
+            ];
+        }
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'weeks' => $weeks,
+        ];
+    }
+
+    // ---------------------------------------------------------------------
+    // Cash Control
+    // ---------------------------------------------------------------------
+
+    /**
+     * GET /api/reports/cash-control/{store}/{date}
+     */
+    public function cashControl(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildCashControlReport($store, $date));
+    }
+
+    private function buildCashControlReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+
+        [$weekStart] = $this->isoBusinessWeek($day);
+
+        $fiscalYear = $this->fiscalYearOf($day);
+        $yearStart = $this->fiscalYearStart($fiscalYear);
+        $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
+        $periodIdx = (int) floor($weekIdx / 4);
+        $periodStart = $yearStart->addWeeks($periodIdx * 4);
+        $quarterStart = $periodStart->subWeeks(8);
+
+        $weekData = $this->cashControlDataForRange($store, $weekStart, $day);
+        $periodData = $this->cashControlDataForRange($store, $periodStart, $day);
+        $quarterData = $this->cashControlDataForRange($store, $quarterStart, $day);
+        $yearData = $this->cashControlDataForRange($store, $yearStart, $day);
+
+        $financialKeys = ['cash_sales', 'deposit', 'deposit_minus_cash_sales', 'over_short'];
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'fiscal_year' => $fiscalYear,
+                'week_start' => $weekStart->toDateString(),
+                'period_number' => $periodIdx + 1,
+                'period_start' => $periodStart->toDateString(),
+                'quarter_start' => $quarterStart->toDateString(),
+                'year_start' => $yearStart->toDateString(),
+            ],
+            'week' => $weekData,
+            'period' => array_intersect_key($periodData, array_flip($financialKeys)),
+            'quarter' => array_intersect_key($quarterData, array_flip($financialKeys)),
+            'year' => array_intersect_key($yearData, array_flip($financialKeys)),
+        ];
+    }
+
+    private function cashControlDataForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $row = DailyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COALESCE(SUM(cash_sales), 0) as cash_sales,'
+                . ' COALESCE(SUM(over_short), 0) as over_short,'
+                . ' COALESCE(SUM(modified_orders), 0) as modified_orders,'
+                . ' COALESCE(SUM(refunded_orders), 0) as refunded_orders,'
+                . ' COALESCE(SUM(cancelled_orders), 0) as voided_orders'
+            )
+            ->first();
+
+        $cashSales = round((float) ($row->cash_sales ?? 0), 2);
+        $deposit = round($this->totalDepositForRange($store, $start, $end), 2);
+
+        return [
+            'cash_sales' => $cashSales,
+            'deposit' => $deposit,
+            'deposit_minus_cash_sales' => round($deposit - $cashSales, 2),
+            'over_short' => round((float) ($row->over_short ?? 0), 2),
+            'modified_orders' => (int) ($row->modified_orders ?? 0),
+            'refunded_orders' => (int) ($row->refunded_orders ?? 0),
+            'voided_orders' => (int) ($row->voided_orders ?? 0),
+        ];
+    }
+
+    // Customer Count and Sales
+    // ---------------------------------------------------------------------
+
+    private function buildCustomerCountAndSalesReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+
+        // ── Week ─────────────────────────────────────────────────────────
+        [$weekStart] = $this->isoBusinessWeek($day);
+        $daysInWeek = (int) $weekStart->diffInDays($day);
+
+        $prevWeekStart = $weekStart->subWeeks(1);
+        $lastYearWeekStart = $weekStart->subWeeks(52);
+
+        // ── Period ───────────────────────────────────────────────────────
+        $fiscalYear = $this->fiscalYearOf($day);
+        $yearStart = $this->fiscalYearStart($fiscalYear);
+        $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
+        $periodIdx = (int) floor($weekIdx / 4);
+        $periodStart = $yearStart->addWeeks($periodIdx * 4);
+        $daysInPeriod = (int) $periodStart->diffInDays($day);
+
+        $prevPeriodStart = $periodStart->subWeeks(4);
+        $lastYearPeriodStart = $periodStart->subWeeks(52);
+
+        // ── Quarter (rolling 3-period window ending at current period) ───
+        $quarterStart = $periodStart->subWeeks(8);
+        $daysInQuarter = (int) $quarterStart->diffInDays($day);
+
+        $prevQuarterStart = $quarterStart->subWeeks(12);
+        $lastYearQuarterStart = $quarterStart->subWeeks(52);
+
+        // ── Year ─────────────────────────────────────────────────────────
+        $daysInYear = (int) $yearStart->diffInDays($day);
+        $prevYearStart = $yearStart->subWeeks(52);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'fiscal_year' => $fiscalYear,
+                'week_number' => $periodIdx * 4 + $weekIdx % 4 + 1,
+                'week_start' => $weekStart->toDateString(),
+                'period_number' => $periodIdx + 1,
+                'period_start' => $periodStart->toDateString(),
+                'quarter_start' => $quarterStart->toDateString(),
+                'year_start' => $yearStart->toDateString(),
+            ],
+            'week' => [
+                'current' => $this->salesAndCustomerCount($store, $weekStart, $day),
+                'previous' => $this->salesAndCustomerCount($store, $prevWeekStart, $prevWeekStart->addDays($daysInWeek)),
+                'same_week_last_year' => $this->salesAndCustomerCount($store, $lastYearWeekStart, $lastYearWeekStart->addDays($daysInWeek)),
+            ],
+            'period' => [
+                'current' => $this->salesAndCustomerCount($store, $periodStart, $day),
+                'previous' => $this->salesAndCustomerCount($store, $prevPeriodStart, $prevPeriodStart->addDays($daysInPeriod)),
+                'same_period_last_year' => $this->salesAndCustomerCount($store, $lastYearPeriodStart, $lastYearPeriodStart->addDays($daysInPeriod)),
+            ],
+            'quarter' => [
+                'current' => $this->salesAndCustomerCount($store, $quarterStart, $day),
+                'previous' => $this->salesAndCustomerCount($store, $prevQuarterStart, $prevQuarterStart->addDays($daysInQuarter)),
+                'same_quarter_last_year' => $this->salesAndCustomerCount($store, $lastYearQuarterStart, $lastYearQuarterStart->addDays($daysInQuarter)),
+            ],
+            'year' => [
+                'current' => $this->salesAndCustomerCount($store, $yearStart, $day),
+                'previous' => $this->salesAndCustomerCount($store, $prevYearStart, $prevYearStart->addDays($daysInYear)),
+            ],
+        ];
+    }
+
+    private function fiscalYearStart(int $year): CarbonImmutable
+    {
+        return CarbonImmutable::create($year, 1, 1)->startOfWeek(CarbonInterface::TUESDAY);
+    }
+
+    private function fiscalYearOf(CarbonImmutable $date): int
+    {
+        $y = $date->year;
+
+        if ($date->lt($this->fiscalYearStart($y))) {
+            return $y - 1;
+        }
+
+        if ($date->gte($this->fiscalYearStart($y + 1))) {
+            return $y + 1;
+        }
+
+        return $y;
+    }
+
+    private function buildPhoneAndAdjustedSalesReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+
+        [$weekStart] = $this->isoBusinessWeek($day);
+        $daysInWeek = (int) $weekStart->diffInDays($day);
+
+        $prevWeekStart = $weekStart->subWeeks(1);
+        $lastYearWeekStart = $weekStart->subWeeks(52);
+
+        $fiscalYear = $this->fiscalYearOf($day);
+        $yearStart = $this->fiscalYearStart($fiscalYear);
+        $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
+        $periodIdx = (int) floor($weekIdx / 4);
+        $periodStart = $yearStart->addWeeks($periodIdx * 4);
+        $daysInPeriod = (int) $periodStart->diffInDays($day);
+
+        $prevPeriodStart = $periodStart->subWeeks(4);
+        $lastYearPeriodStart = $periodStart->subWeeks(52);
+
+        $quarterStart = $periodStart->subWeeks(8);
+        $daysInQuarter = (int) $quarterStart->diffInDays($day);
+
+        $prevQuarterStart = $quarterStart->subWeeks(12);
+        $lastYearQuarterStart = $quarterStart->subWeeks(52);
+
+        $daysInYear = (int) $yearStart->diffInDays($day);
+        $prevYearStart = $yearStart->subWeeks(52);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'fiscal_year' => $fiscalYear,
+                'week_number' => $periodIdx * 4 + $weekIdx % 4 + 1,
+                'week_start' => $weekStart->toDateString(),
+                'period_number' => $periodIdx + 1,
+                'period_start' => $periodStart->toDateString(),
+                'quarter_start' => $quarterStart->toDateString(),
+                'year_start' => $yearStart->toDateString(),
+            ],
+            'week' => [
+                'current' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $weekStart, $day),
+                'previous' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $prevWeekStart, $prevWeekStart->addDays($daysInWeek)),
+                'same_week_last_year' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $lastYearWeekStart, $lastYearWeekStart->addDays($daysInWeek)),
+            ],
+            'period' => [
+                'current' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $periodStart, $day),
+                'previous' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $prevPeriodStart, $prevPeriodStart->addDays($daysInPeriod)),
+                'same_period_last_year' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $lastYearPeriodStart, $lastYearPeriodStart->addDays($daysInPeriod)),
+            ],
+            'quarter' => [
+                'current' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $quarterStart, $day),
+                'previous' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $prevQuarterStart, $prevQuarterStart->addDays($daysInQuarter)),
+                'same_quarter_last_year' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $lastYearQuarterStart, $lastYearQuarterStart->addDays($daysInQuarter)),
+            ],
+            'year' => [
+                'current' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $yearStart, $day),
+                'previous' => $this->phoneSalesAndAdjustedRoyaltyForRange($store, $prevYearStart, $prevYearStart->addDays($daysInYear)),
+            ],
+        ];
+    }
+
+    private function phoneSalesAndAdjustedRoyaltyForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $row = HourlyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COALESCE(SUM(phone_sales), 0) as phone_sales,'
+                . ' COALESCE(SUM(royalty_obligation) - SUM(phone_sales) - SUM(call_center_sales)'
+                . ' - SUM(drive_thru_sales) - SUM(website_sales) - SUM(mobile_sales)'
+                . ' - SUM(doordash_sales) - SUM(ubereats_sales) - SUM(grubhub_sales), 0)'
+                . ' as adjusted_royalty_obligation'
+            )
+            ->first();
+
+        return [
+            'phone_sales' => round((float) ($row->phone_sales ?? 0), 2),
+            'adjusted_royalty_obligation' => round((float) ($row->adjusted_royalty_obligation ?? 0), 2),
+        ];
+    }
+
+    private function salesAndCustomerCount(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $row = DailyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COALESCE(SUM(royalty_obligation), 0) as total_sales,'
+                . ' COALESCE(SUM(customer_count), 0) as customer_count'
+            )
+            ->first();
+
+        return [
+            'total_sales' => round((float) ($row->total_sales ?? 0), 2),
+            'customer_count' => (int) ($row->customer_count ?? 0),
         ];
     }
 }
