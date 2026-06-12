@@ -19,6 +19,7 @@ use Illuminate\Validation\ValidationException;
 use App\Models\Aggregation\DailyStoreSummary;
 use App\Models\GoalMetric;
 use App\Models\EnteredKeyValue;
+use App\Models\NonNegotiableReport;
 /**
  * DSPR Lite Report Controller
  *
@@ -68,6 +69,17 @@ class ReportsController extends Controller
         return response()->json($payload);
     }
 
+    public function nonNegotiableReports(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+        $reports = NonNegotiableReport::where('store_number', $store)
+            ->whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
+            ->get();
+
+        return response()->json($reports);
+    }
     /**
      * GET /api/reports/channel-sales/{store}/{date}
      */
@@ -1361,47 +1373,47 @@ class ReportsController extends Controller
         $day = CarbonImmutable::parse($date)->startOfDay();
         [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
         $prevWeekStart = $weekStart->subWeeks(1);
-        $prevWeekEnd   = $weekEnd->subWeeks(1);
+        $prevWeekEnd = $weekEnd->subWeeks(1);
 
         $currentTotalSales = round((float) $this->summaryQuery->getSales($store, $weekStart->toMutable(), $day->toMutable()), 2);
-        $prevTotalSales    = round((float) $this->summaryQuery->getSales($store, $prevWeekStart->toMutable(), $prevWeekEnd->toMutable()), 2);
+        $prevTotalSales = round((float) $this->summaryQuery->getSales($store, $prevWeekStart->toMutable(), $prevWeekEnd->toMutable()), 2);
 
         $currentBreakdown = $this->promoBreakdownForRange($store, $weekStart, $day, $currentTotalSales);
-        $prevBreakdown    = $this->promoBreakdownForRange($store, $prevWeekStart, $prevWeekEnd, $prevTotalSales);
+        $prevBreakdown = $this->promoBreakdownForRange($store, $prevWeekStart, $prevWeekEnd, $prevTotalSales);
 
         $currentTotals = $this->sumPromoBreakdown($currentBreakdown, $currentTotalSales);
-        $prevTotals    = $this->sumPromoBreakdown($prevBreakdown, $prevTotalSales);
+        $prevTotals = $this->sumPromoBreakdown($prevBreakdown, $prevTotalSales);
 
         $currentPromo = $currentTotals['total_promo_sales'];
-        $prevPromo    = $prevTotals['total_promo_sales'];
-        $currentPct   = $currentTotals['pct_of_store_sales'];
-        $prevPct      = $prevTotals['pct_of_store_sales'];
+        $prevPromo = $prevTotals['total_promo_sales'];
+        $currentPct = $currentTotals['pct_of_store_sales'];
+        $prevPct = $prevTotals['pct_of_store_sales'];
 
         return [
             'filtering' => [
-                'store'      => $store,
-                'date'       => $day->toDateString(),
+                'store' => $store,
+                'date' => $day->toDateString(),
                 'week_start' => $weekStart->toDateString(),
-                'week_end'   => $day->toDateString(),
+                'week_end' => $day->toDateString(),
             ],
             'current_week' => [
                 'total_store_sales' => $currentTotalSales,
-                'promo_breakdown'   => $currentBreakdown,
-                'promo_totals'      => $currentTotals,
+                'promo_breakdown' => $currentBreakdown,
+                'promo_totals' => $currentTotals,
             ],
             'previous_week' => [
-                'week_start'        => $prevWeekStart->toDateString(),
-                'week_end'          => $prevWeekEnd->toDateString(),
+                'week_start' => $prevWeekStart->toDateString(),
+                'week_end' => $prevWeekEnd->toDateString(),
                 'total_store_sales' => $prevTotalSales,
-                'promo_breakdown'   => $prevBreakdown,
-                'promo_totals'      => $prevTotals,
+                'promo_breakdown' => $prevBreakdown,
+                'promo_totals' => $prevTotals,
             ],
             'week_over_week' => [
-                'promo_sales_change_pct'          => $prevPromo > 0
+                'promo_sales_change_pct' => $prevPromo > 0
                     ? round(($currentPromo - $prevPromo) / $prevPromo * 100, 2) : 0.0,
                 'current_week_promo_to_sales_pct' => $currentPct,
-                'previous_week_promo_to_sales_pct'=> $prevPct,
-                'promo_to_sales_pct_change'       => round($currentPct - $prevPct, 2),
+                'previous_week_promo_to_sales_pct' => $prevPct,
+                'promo_to_sales_pct_change' => round($currentPct - $prevPct, 2),
             ],
         ];
     }
@@ -1413,7 +1425,7 @@ class ReportsController extends Controller
         float $storeTotalSales
     ): array {
         $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
-        $union   = array_shift($queries);
+        $union = array_shift($queries);
         foreach ($queries as $q) {
             $union->unionAll($q);
         }
@@ -1439,18 +1451,18 @@ class ReportsController extends Controller
 
         return $rows->map(function ($row) use ($storeTotalSales) {
             $promoSales = round((float) $row->promo_sales, 2);
-            $doordash   = round((float) $row->doordash_sales, 2);
-            $ubereats   = round((float) $row->ubereats_sales, 2);
-            $grubhub    = round((float) $row->grubhub_sales, 2);
+            $doordash = round((float) $row->doordash_sales, 2);
+            $ubereats = round((float) $row->ubereats_sales, 2);
+            $grubhub = round((float) $row->grubhub_sales, 2);
 
             return [
                 'modification_reason' => $row->modification_reason,
-                'promo_sales'         => $promoSales,
-                'doordash_sales'      => $doordash,
-                'ubereats_sales'      => $ubereats,
-                'grubhub_sales'       => $grubhub,
-                'lc_sales'            => round($promoSales - $doordash - $ubereats - $grubhub, 2),
-                'pct_of_store_sales'  => $storeTotalSales > 0
+                'promo_sales' => $promoSales,
+                'doordash_sales' => $doordash,
+                'ubereats_sales' => $ubereats,
+                'grubhub_sales' => $grubhub,
+                'lc_sales' => round($promoSales - $doordash - $ubereats - $grubhub, 2),
+                'pct_of_store_sales' => $storeTotalSales > 0
                     ? round($promoSales / $storeTotalSales * 100, 2) : 0.0,
             ];
         })->toArray();
@@ -1458,26 +1470,26 @@ class ReportsController extends Controller
 
     private function sumPromoBreakdown(array $breakdown, float $storeTotalSales): array
     {
-        $totalPromo    = 0.0;
+        $totalPromo = 0.0;
         $totalDoordash = 0.0;
         $totalUbereats = 0.0;
-        $totalGrubhub  = 0.0;
+        $totalGrubhub = 0.0;
 
         foreach ($breakdown as $row) {
-            $totalPromo    += $row['promo_sales'];
+            $totalPromo += $row['promo_sales'];
             $totalDoordash += $row['doordash_sales'];
             $totalUbereats += $row['ubereats_sales'];
-            $totalGrubhub  += $row['grubhub_sales'];
+            $totalGrubhub += $row['grubhub_sales'];
         }
 
         $totalPromo = round($totalPromo, 2);
 
         return [
-            'total_promo_sales'  => $totalPromo,
-            'total_doordash'     => round($totalDoordash, 2),
-            'total_ubereats'     => round($totalUbereats, 2),
-            'total_grubhub'      => round($totalGrubhub, 2),
-            'total_lc'           => round($totalPromo - $totalDoordash - $totalUbereats - $totalGrubhub, 2),
+            'total_promo_sales' => $totalPromo,
+            'total_doordash' => round($totalDoordash, 2),
+            'total_ubereats' => round($totalUbereats, 2),
+            'total_grubhub' => round($totalGrubhub, 2),
+            'total_lc' => round($totalPromo - $totalDoordash - $totalUbereats - $totalGrubhub, 2),
             'pct_of_store_sales' => $storeTotalSales > 0
                 ? round($totalPromo / $storeTotalSales * 100, 2) : 0.0,
         ];

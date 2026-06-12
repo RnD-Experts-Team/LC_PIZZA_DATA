@@ -42,6 +42,7 @@ Route::get('/reports/phone-and-adjusted-sales/{store}/{date}', [ReportsControlle
 Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'cashControl'])->middleware('auth.token.store');
 Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware('auth.token.store');
 Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware('auth.token.store');
+Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
