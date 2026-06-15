@@ -52,10 +52,27 @@ class ReportsController extends Controller
         'fulfilled' => ['Register', 'Drive-Thru'],
     ];
 
+    /**
+     * Request-scoped memoization cache.
+     *
+     * Laravel resolves a fresh controller instance per request, so this is
+     * naturally request-scoped: identical (store, range, ...) helper calls
+     * across reports execute their DB work once. No cross-request leakage.
+     */
+    private array $memo = [];
+
     public function __construct(
         private readonly SummaryQueryService $summaryQuery,
         private readonly IntelligentAggregationService $intelligentAgg,
     ) {
+    }
+
+    /**
+     * Return the memoized result for $key, computing it via $fn on first miss.
+     */
+    private function remember(string $key, callable $fn): mixed
+    {
+        return $this->memo[$key] ??= $fn();
     }
 
     /**
@@ -73,18 +90,29 @@ class ReportsController extends Controller
     public function nonNegotiableReports(string $store, string $date): JsonResponse
     {
         $this->validateInputs($store, $date);
+
+        return response()->json($this->buildNonNegotiableReports($store, $date));
+    }
+
+    private function buildNonNegotiableReports(string $store, string $date)
+    {
         $day = CarbonImmutable::parse($date)->startOfDay();
         [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
-        $reports = NonNegotiableReport::where('store_number', $store)
+
+        return NonNegotiableReport::where('store_number', $store)
             ->whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
             ->get();
-
-        return response()->json($reports);
     }
 
     public function goToReport(string $store, string $date): JsonResponse
     {
         $this->validateInputs($store, $date);
+
+        return response()->json($this->buildGoToReport($store, $date));
+    }
+
+    private function buildGoToReport(string $store, string $date): array
+    {
         $day = CarbonImmutable::parse($date)->startOfDay();
         [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
 
@@ -98,7 +126,7 @@ class ReportsController extends Controller
         $storeManagerCount = $calls->where('status', 'is_store_manager')->count();
         $callCenterCount = $calls->where('status', 'is_call_center')->count();
 
-        return response()->json([
+        return [
             'filtering' => [
                 'store' => $store,
                 'date' => $day->toDateString(),
@@ -112,7 +140,7 @@ class ReportsController extends Controller
                 'is_store_manager' => $storeManagerCount,
                 'is_call_center' => $callCenterCount,
             ],
-        ]);
+        ];
     }
 
     /**
@@ -122,13 +150,18 @@ class ReportsController extends Controller
     {
         $this->validateInputs($store, $date);
 
+        return response()->json($this->buildChannelSales($store, $date));
+    }
+
+    private function buildChannelSales(string $store, string $date): array
+    {
         $day = CarbonImmutable::parse($date)->startOfDay();
         [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
 
         $prevWeekStart = $weekStart->subWeeks(1);
         $prevWeekEnd = $weekEnd->subWeeks(1);
 
-        return response()->json([
+        return [
             'filtering' => [
                 'store' => $store,
                 'date' => $day->toDateString(),
@@ -145,7 +178,7 @@ class ReportsController extends Controller
                 'week_end' => $prevWeekEnd->toDateString(),
                 ...$this->channelSalesForRange($store, $prevWeekStart, $prevWeekEnd),
             ],
-        ]);
+        ];
     }
 
     /**
@@ -194,6 +227,31 @@ class ReportsController extends Controller
         $this->validateInputs($store, $date);
 
         return response()->json($this->buildCustomerCountAndSalesReport($store, $date));
+    }
+
+    /**
+     * GET /api/reports/dashboard/{store}/{date}
+     *
+     * Combined endpoint: every per-page report in a single response, keyed by
+     * its URL slug. Each value is byte-for-byte identical to the standalone
+     * endpoint. Overlapping DB work is deduped within the request via remember().
+     */
+    public function dashboard(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json([
+            'dspr' => $this->buildReport($store, $date),
+            'customer-count-and-sales' => $this->buildCustomerCountAndSalesReport($store, $date),
+            'portal-weekly' => $this->buildPortalWeeklyReport($store, $date),
+            'channel-sales' => $this->buildChannelSales($store, $date),
+            'phone-and-adjusted-sales' => $this->buildPhoneAndAdjustedSalesReport($store, $date),
+            'cash-control' => $this->buildCashControlReport($store, $date),
+            'lto' => $this->buildLtoReport($store, $date),
+            'promo' => $this->buildPromoReport($store, $date),
+            'non-negotiable-reports' => $this->buildNonNegotiableReports($store, $date),
+            'go-to' => $this->buildGoToReport($store, $date),
+        ]);
     }
 
     // ---------------------------------------------------------------------
@@ -531,17 +589,21 @@ class ReportsController extends Controller
 
     private function salesByDay(string $store, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $out = [];
+        $key = "salesByDay:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        for ($d = $start; $d->lte($end); $d = $d->addDay()) {
-            $out[$d->toDateString()] = $this->summaryQuery->getSales(
-                $store,
-                $d->toMutable(),
-                $d->toMutable()
-            );
-        }
+        return $this->remember($key, function () use ($store, $start, $end) {
+            $out = [];
 
-        return $out;
+            for ($d = $start; $d->lte($end); $d = $d->addDay()) {
+                $out[$d->toDateString()] = $this->summaryQuery->getSales(
+                    $store,
+                    $d->toMutable(),
+                    $d->toMutable()
+                );
+            }
+
+            return $out;
+        });
     }
 
     private function sumSalesByDay(array $salesByDay): float
@@ -571,14 +633,23 @@ class ReportsController extends Controller
 
     private function salesTotal(string $store, CarbonImmutable $start, CarbonImmutable $end): float
     {
-        return (float) $this->summaryQuery->getSales(
+        $key = "salesTotal:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): float => (float) $this->summaryQuery->getSales(
             $store,
             $start->toMutable(),
             $end->toMutable()
-        );
+        ));
     }
 
     private function dailySummaryTotals(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $key = "dailySummaryTotals:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computeDailySummaryTotals($store, $start, $end));
+    }
+
+    private function computeDailySummaryTotals(string $store, CarbonImmutable $start, CarbonImmutable $end): array
     {
         $totals = DailyStoreSummary::where('franchise_store', $store)
             ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
@@ -642,6 +713,18 @@ class ReportsController extends Controller
     ): array {
         $orderByField = $orderByField === 'quantity_sold' ? 'quantity_sold' : 'gross_sales';
 
+        $key = "topItemsForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}:{$limit}:{$orderByField}";
+
+        return $this->remember($key, fn (): array => $this->computeTopItemsForRange($store, $start, $end, $limit, $orderByField));
+    }
+
+    private function computeTopItemsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end,
+        int $limit,
+        string $orderByField
+    ): array {
         $result = $this->intelligentAgg->fetchAggregatedData([
             'start_date' => $start->toDateString(),
             'end_date' => $end->toDateString(),
@@ -1043,6 +1126,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
+        $key = "totalSalesByChannelForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computeTotalSalesByChannelForRange($store, $start, $end));
+    }
+
+    private function computeTotalSalesByChannelForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
         $totals = HourlyStoreSummary::where('franchise_store', $store)
             ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
             ->selectRaw(
@@ -1111,6 +1204,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
+        $key = "websiteAndMobileSplitForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computeWebsiteAndMobileSplitForRange($store, $start, $end));
+    }
+
+    private function computeWebsiteAndMobileSplitForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
         $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
 
         $union = array_shift($queries);
@@ -1163,6 +1266,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): float {
+        $key = "totalDepositForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): float => $this->computeTotalDepositForRange($store, $start, $end));
+    }
+
+    private function computeTotalDepositForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
         $queries = DatabaseRouter::routedQueries(
             'financial_views',
             $start->toMutable(),
@@ -1200,6 +1313,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): float {
+        $key = "altaInventoryWasteForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): float => $this->computeAltaInventoryWasteForRange($store, $start, $end));
+    }
+
+    private function computeAltaInventoryWasteForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
         $queries = DatabaseRouter::routedQueries(
             'alta_inventory_waste',
             $start->toMutable(),
@@ -1219,6 +1342,16 @@ class ReportsController extends Controller
     }
 
     private function normalWasteForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
+        $key = "normalWasteForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): float => $this->computeNormalWasteForRange($store, $start, $end));
+    }
+
+    private function computeNormalWasteForRange(
         string $store,
         CarbonImmutable $start,
         CarbonImmutable $end
@@ -1374,6 +1507,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
+        $key = "portalMetricsForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computePortalMetricsForRange($store, $start, $end));
+    }
+
+    private function computePortalMetricsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
         $eligible = $this->summaryQuery->getPortalEligibleOrders(
             $store,
             $start->toMutable(),
@@ -1419,8 +1562,8 @@ class ReportsController extends Controller
         $prevWeekStart = $weekStart->subWeeks(1);
         $prevWeekEnd = $weekEnd->subWeeks(1);
 
-        $currentTotalSales = round((float) $this->summaryQuery->getSales($store, $weekStart->toMutable(), $day->toMutable()), 2);
-        $prevTotalSales = round((float) $this->summaryQuery->getSales($store, $prevWeekStart->toMutable(), $prevWeekEnd->toMutable()), 2);
+        $currentTotalSales = round($this->salesTotal($store, $weekStart, $day), 2);
+        $prevTotalSales = round($this->salesTotal($store, $prevWeekStart, $prevWeekEnd), 2);
 
         $currentBreakdown = $this->promoBreakdownForRange($store, $weekStart, $day, $currentTotalSales);
         $prevBreakdown = $this->promoBreakdownForRange($store, $prevWeekStart, $prevWeekEnd, $prevTotalSales);
@@ -1555,7 +1698,7 @@ class ReportsController extends Controller
         $mPrevWeekStart = $prevWeekStart->toMutable();
         $mPrevWeekEnd = $prevWeekEnd->toMutable();
 
-        $storeTotalSales = round((float) $this->summaryQuery->getSales($store, $mWeekStart, $mDay), 2);
+        $storeTotalSales = round($this->salesTotal($store, $weekStart, $day), 2);
         $storeTotalQuantity = $this->storeTotalQuantityForRange($store, $weekStart, $day);
 
         $items = [];
@@ -1714,6 +1857,16 @@ class ReportsController extends Controller
     }
 
     private function cashControlDataForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $key = "cashControlDataForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computeCashControlDataForRange($store, $start, $end));
+    }
+
+    private function computeCashControlDataForRange(
         string $store,
         CarbonImmutable $start,
         CarbonImmutable $end
@@ -1901,6 +2054,16 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
+        $key = "phoneSalesAndAdjustedRoyaltyForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computePhoneSalesAndAdjustedRoyaltyForRange($store, $start, $end));
+    }
+
+    private function computePhoneSalesAndAdjustedRoyaltyForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
         $row = HourlyStoreSummary::where('franchise_store', $store)
             ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
             ->selectRaw(
@@ -1919,6 +2082,16 @@ class ReportsController extends Controller
     }
 
     private function salesAndCustomerCount(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $key = "salesAndCustomerCount:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn (): array => $this->computeSalesAndCustomerCount($store, $start, $end));
+    }
+
+    private function computeSalesAndCustomerCount(
         string $store,
         CarbonImmutable $start,
         CarbonImmutable $end
