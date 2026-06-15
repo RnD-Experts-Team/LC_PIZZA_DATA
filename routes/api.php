@@ -13,6 +13,7 @@ use App\Http\Controllers\API\{
     TagController,
     GoalMetricController,
     GoalController,
+    GoToCallController,
 };
 
 
@@ -43,6 +44,7 @@ Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'c
 Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware('auth.token.store');
 Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware('auth.token.store');
 Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware('auth.token.store');
+Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToReport'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
@@ -128,3 +130,10 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
     Route::put('/{goal}', [GoalController::class, 'update']);
     Route::delete('/{goal}', [GoalController::class, 'destroy']);
 });
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// GO TO CALL ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');

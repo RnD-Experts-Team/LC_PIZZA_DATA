@@ -20,6 +20,7 @@ use App\Models\Aggregation\DailyStoreSummary;
 use App\Models\GoalMetric;
 use App\Models\EnteredKeyValue;
 use App\Models\NonNegotiableReport;
+use App\Models\GoToCall;
 /**
  * DSPR Lite Report Controller
  *
@@ -80,6 +81,40 @@ class ReportsController extends Controller
 
         return response()->json($reports);
     }
+
+    public function goToReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $calls = GoToCall::where('store_number', $store)
+            ->whereBetween('datetime', [$weekStart->toDateTimeString(), $weekEnd->copy()->addDay()->toDateTimeString()])
+            ->get();
+
+        $totalCalls = $calls->count();
+        $missedCount = $calls->where('status', 'is_missed')->count();
+        $storeCount = $calls->where('status', 'is_store')->count();
+        $storeManagerCount = $calls->where('status', 'is_store_manager')->count();
+        $callCenterCount = $calls->where('status', 'is_call_center')->count();
+
+        return response()->json([
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'summary' => [
+                'total_calls' => $totalCalls,
+                'missed' => $missedCount,
+                'is_store' => $storeCount,
+                'is_store_manager' => $storeManagerCount,
+                'is_call_center' => $callCenterCount,
+            ],
+        ]);
+    }
+
     /**
      * GET /api/reports/channel-sales/{store}/{date}
      */
