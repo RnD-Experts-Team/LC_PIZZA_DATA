@@ -153,25 +153,10 @@ class GoToCallCsvProcessor
 
     private function parseStatus(string $store, string $storeManager, string $callCenter, string $missed): string
     {
-        $statusMap = [
-            1 => 'is_store',
-            2 => 'is_store_manager',
-            3 => 'is_call_center',
-            4 => 'is_missed',
-        ];
-
-        $statuses = [
-            (int)$store => 'is_store',
-            (int)$storeManager => 'is_store_manager',
-            (int)$callCenter => 'is_call_center',
-            (int)$missed => 'is_missed',
-        ];
-
-        foreach ($statuses as $value => $status) {
-            if ($value === 1) {
-                return $status;
-            }
-        }
+        if ((int)$store === 1) return 'is_store';
+        if ((int)$storeManager === 1) return 'is_store_manager';
+        if ((int)$callCenter === 1) return 'is_call_center';
+        if ((int)$missed === 1) return 'is_missed';
 
         throw new \Exception('No status column marked as 1');
     }

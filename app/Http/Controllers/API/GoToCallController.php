@@ -29,14 +29,32 @@ class GoToCallController extends Controller
 
         try {
             $file = $request->file('file');
-            $filePath = $file->store('go_to_calls_uploads', 'local');
-            $fullPath = storage_path("app/{$filePath}");
+            $uploadId = uniqid('go_to_call_', true);
+            $storagePath = storage_path("app/go_to_calls_uploads/{$uploadId}");
+
+            // Ensure directory exists
+            if (!is_dir($storagePath)) {
+                mkdir($storagePath, 0755, true);
+            }
+
+            $filename = $file->getClientOriginalName();
+            $filePath = $storagePath . '/' . $filename;
+
+            // Move the file to storage
+            if (!$file->move($storagePath, $filename)) {
+                throw new \Exception('Failed to move uploaded file');
+            }
+
+            if (!file_exists($filePath)) {
+                throw new \Exception('File was not stored correctly');
+            }
 
             $processor = new GoToCallCsvProcessor();
-            $result = $processor->process($fullPath);
+            $result = $processor->process($filePath);
 
             // Clean up uploaded file
-            @unlink($fullPath);
+            @unlink($filePath);
+            @rmdir($storagePath);
 
             if (!$result['success']) {
                 return response()->json([
@@ -60,7 +78,7 @@ class GoToCallController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'An error occurred while processing the file',
+                'message' => $e->getMessage(),
             ], 500);
         }
     }
