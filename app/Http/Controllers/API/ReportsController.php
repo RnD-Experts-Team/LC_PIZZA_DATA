@@ -1364,6 +1364,15 @@ class ReportsController extends Controller
         ];
     }
 
+    private function hnrMetricsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $totals = $this->dailySummaryTotals($store, $start, $end);
+        return $this->hnrTotals($totals);
+    }
+
     // ---------------------------------------------------------------------
     // Promo Report
     // ---------------------------------------------------------------------
@@ -1591,6 +1600,7 @@ class ReportsController extends Controller
             'week_start' => $weekStart->toDateString(),
             'week_end' => $day->toDateString(),
             ...$this->portalMetricsForRange($store, $weekStart, $day),
+            ...$this->hnrMetricsForRange($store, $weekStart, $day),
         ];
 
         // 7 previous complete weeks
@@ -1601,6 +1611,7 @@ class ReportsController extends Controller
                 'week_start' => $start->toDateString(),
                 'week_end' => $end->toDateString(),
                 ...$this->portalMetricsForRange($store, $start, $end),
+                ...$this->hnrMetricsForRange($store, $start, $end),
             ];
         }
 
