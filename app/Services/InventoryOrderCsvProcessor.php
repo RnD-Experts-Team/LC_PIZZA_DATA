@@ -99,6 +99,13 @@ class InventoryOrderCsvProcessor
     private function parseDate(string $value): string
     {
         $value = trim($value);
+
+        // Excel serial date (e.g. 46144) — days since Dec 30, 1899
+        if (is_numeric($value)) {
+            $unix = ((int) $value - 25569) * 86400;
+            return date('Y-m-d', $unix);
+        }
+
         $date = date_create($value);
         if (!$date) {
             throw new \Exception('Invalid date format: ' . $value);
