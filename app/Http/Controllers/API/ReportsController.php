@@ -165,7 +165,7 @@ class ReportsController extends Controller
                 $q->where('from_store_number', $store)
                     ->orWhere('to_store_number', $store);
             })
-            ->get(['ing_des', 'quantity', 'unit', 'total_cost']);
+            ->get(['date', 'ing_des', 'quantity', 'unit', 'total_cost', 'from_store_number', 'to_store_number']);
 
         return [
             'filtering' => [
