@@ -14,6 +14,7 @@ use App\Http\Controllers\API\{
     GoalMetricController,
     GoalController,
     GoToCallController,
+    InventoryController,
 };
 
 
@@ -138,3 +139,11 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// INVENTORY ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware('auth.token.store');
+Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware('auth.token.store');
