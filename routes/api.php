@@ -13,6 +13,8 @@ use App\Http\Controllers\API\{
     TagController,
     GoalMetricController,
     GoalController,
+    GoToCallController,
+    InventoryController,
 };
 
 
@@ -34,9 +36,17 @@ Route::prefix('export')->group(function () {
     Route::get('csv/excel-reports', [ExportingController::class, 'exportCSV'])->name('export.csv.excel-reports')->middleware('auth.secret.key');
 });
 
+Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware('auth.token.store');
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware('auth.token.store');
-
-
+Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware('auth.token.store');
+Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware('auth.token.store');
+Route::get('/reports/channel-sales/{store}/{date}', [ReportsController::class, 'channelSales'])->middleware('auth.token.store');
+Route::get('/reports/phone-and-adjusted-sales/{store}/{date}', [ReportsController::class, 'phoneAndAdjustedSales'])->middleware('auth.token.store');
+Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'cashControl'])->middleware('auth.token.store');
+Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware('auth.token.store');
+Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware('auth.token.store');
+Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware('auth.token.store');
+Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToReport'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
@@ -122,3 +132,20 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
     Route::put('/{goal}', [GoalController::class, 'update']);
     Route::delete('/{goal}', [GoalController::class, 'destroy']);
 });
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// GO TO CALL ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');
+Route::get('/reports/transfer-in-out/{store}/{date}', [ReportsController::class, 'transferInOutReport'])->middleware('auth.token.store');
+Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class, 'ordersVsSalesReport'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// INVENTORY ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware('auth.token.store');
+Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware('auth.token.store');
