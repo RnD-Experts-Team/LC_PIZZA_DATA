@@ -139,6 +139,8 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');
+Route::get('/reports/transfer-in-out/{store}/{date}', [ReportsController::class, 'transferInOutReport'])->middleware('auth.token.store');
+Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class, 'ordersVsSalesReport'])->middleware('auth.token.store');
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════

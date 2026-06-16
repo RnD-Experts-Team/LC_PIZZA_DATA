@@ -21,6 +21,8 @@ use App\Models\GoalMetric;
 use App\Models\EnteredKeyValue;
 use App\Models\NonNegotiableReport;
 use App\Models\GoToCall;
+use App\Models\TransferInOut;
+use App\Models\InventoryOrder;
 /**
  * DSPR Lite Report Controller
  *
@@ -143,6 +145,92 @@ class ReportsController extends Controller
         ];
     }
 
+    public function transferInOutReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildTransferInOutReport($store, $date));
+    }
+
+    private function buildTransferInOutReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $prevWeekStart = $weekStart->subWeek();
+        $prevWeekEnd = $weekEnd->subWeek();
+
+        $entries = TransferInOut::whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
+            ->where(function ($q) use ($store) {
+                $q->where('from_store_number', $store)
+                    ->orWhere('to_store_number', $store);
+            })
+            ->get(['ing_des', 'quantity', 'unit', 'total_cost']);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'entries' => $entries,
+            'sales' => [
+                'current_week' => $this->salesTotal($store, $weekStart, $day),
+                'previous_week' => $this->salesTotal($store, $prevWeekStart, $prevWeekEnd),
+            ],
+        ];
+    }
+
+    public function ordersVsSalesReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildOrdersVsSalesReport($store, $date));
+    }
+
+    private function buildOrdersVsSalesReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'current_week' => $this->ordersVsSalesPeriod($store, $weekStart, $weekEnd),
+            'four_weeks' => $this->ordersVsSalesPeriod($store, $weekStart->subWeeks(3), $weekEnd),
+            'twelve_weeks' => $this->ordersVsSalesPeriod($store, $weekStart->subWeeks(11), $weekEnd),
+            'six_months' => $this->ordersVsSalesPeriod($store, $weekStart->subMonths(6), $weekEnd),
+        ];
+    }
+
+    private function ordersVsSalesPeriod(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $sales = $this->salesTotal($store, $start, $end);
+
+        $blueLine = (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
+            ->where('vendor_name', 'like', '%BLUE LINE%')
+            ->sum('invoice_total');
+
+        $pepsi = (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
+            ->where('vendor_name', 'like', '%PEPSI%')
+            ->sum('invoice_total');
+
+        return [
+            'sales' => round($sales, 2),
+            'blue_line_total' => round($blueLine, 2),
+            'pepsi_total' => round($pepsi, 2),
+            'blue_line_pct' => $sales > 0 ? round($blueLine / $sales * 100, 2) : 0,
+            'pepsi_pct' => $sales > 0 ? round($pepsi / $sales * 100, 2) : 0,
+        ];
+    }
+
     /**
      * GET /api/reports/channel-sales/{store}/{date}
      */
@@ -251,6 +339,8 @@ class ReportsController extends Controller
             'promo' => $this->buildPromoReport($store, $date),
             'non-negotiable-reports' => $this->buildNonNegotiableReports($store, $date),
             'go-to' => $this->buildGoToReport($store, $date),
+            'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
+            'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
         ]);
     }
 
@@ -635,7 +725,7 @@ class ReportsController extends Controller
     {
         $key = "salesTotal:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): float => (float) $this->summaryQuery->getSales(
+        return $this->remember($key, fn(): float => (float) $this->summaryQuery->getSales(
             $store,
             $start->toMutable(),
             $end->toMutable()
@@ -646,7 +736,7 @@ class ReportsController extends Controller
     {
         $key = "dailySummaryTotals:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computeDailySummaryTotals($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computeDailySummaryTotals($store, $start, $end));
     }
 
     private function computeDailySummaryTotals(string $store, CarbonImmutable $start, CarbonImmutable $end): array
@@ -715,7 +805,7 @@ class ReportsController extends Controller
 
         $key = "topItemsForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}:{$limit}:{$orderByField}";
 
-        return $this->remember($key, fn (): array => $this->computeTopItemsForRange($store, $start, $end, $limit, $orderByField));
+        return $this->remember($key, fn(): array => $this->computeTopItemsForRange($store, $start, $end, $limit, $orderByField));
     }
 
     private function computeTopItemsForRange(
@@ -1128,7 +1218,7 @@ class ReportsController extends Controller
     ): array {
         $key = "totalSalesByChannelForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computeTotalSalesByChannelForRange($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computeTotalSalesByChannelForRange($store, $start, $end));
     }
 
     private function computeTotalSalesByChannelForRange(
@@ -1206,7 +1296,7 @@ class ReportsController extends Controller
     ): array {
         $key = "websiteAndMobileSplitForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computeWebsiteAndMobileSplitForRange($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computeWebsiteAndMobileSplitForRange($store, $start, $end));
     }
 
     private function computeWebsiteAndMobileSplitForRange(
@@ -1268,7 +1358,7 @@ class ReportsController extends Controller
     ): float {
         $key = "totalDepositForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): float => $this->computeTotalDepositForRange($store, $start, $end));
+        return $this->remember($key, fn(): float => $this->computeTotalDepositForRange($store, $start, $end));
     }
 
     private function computeTotalDepositForRange(
@@ -1315,7 +1405,7 @@ class ReportsController extends Controller
     ): float {
         $key = "altaInventoryWasteForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): float => $this->computeAltaInventoryWasteForRange($store, $start, $end));
+        return $this->remember($key, fn(): float => $this->computeAltaInventoryWasteForRange($store, $start, $end));
     }
 
     private function computeAltaInventoryWasteForRange(
@@ -1348,7 +1438,7 @@ class ReportsController extends Controller
     ): float {
         $key = "normalWasteForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): float => $this->computeNormalWasteForRange($store, $start, $end));
+        return $this->remember($key, fn(): float => $this->computeNormalWasteForRange($store, $start, $end));
     }
 
     private function computeNormalWasteForRange(
@@ -1509,7 +1599,7 @@ class ReportsController extends Controller
     ): array {
         $key = "portalMetricsForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computePortalMetricsForRange($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computePortalMetricsForRange($store, $start, $end));
     }
 
     private function computePortalMetricsForRange(
@@ -1863,7 +1953,7 @@ class ReportsController extends Controller
     ): array {
         $key = "cashControlDataForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computeCashControlDataForRange($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computeCashControlDataForRange($store, $start, $end));
     }
 
     private function computeCashControlDataForRange(
@@ -2056,7 +2146,7 @@ class ReportsController extends Controller
     ): array {
         $key = "phoneSalesAndAdjustedRoyaltyForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computePhoneSalesAndAdjustedRoyaltyForRange($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computePhoneSalesAndAdjustedRoyaltyForRange($store, $start, $end));
     }
 
     private function computePhoneSalesAndAdjustedRoyaltyForRange(
@@ -2088,7 +2178,7 @@ class ReportsController extends Controller
     ): array {
         $key = "salesAndCustomerCount:{$store}:{$start->toDateString()}:{$end->toDateString()}";
 
-        return $this->remember($key, fn (): array => $this->computeSalesAndCustomerCount($store, $start, $end));
+        return $this->remember($key, fn(): array => $this->computeSalesAndCustomerCount($store, $start, $end));
     }
 
     private function computeSalesAndCustomerCount(
