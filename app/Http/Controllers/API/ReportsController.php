@@ -167,6 +167,16 @@ class ReportsController extends Controller
             })
             ->get(['date', 'ing_des', 'quantity', 'unit', 'total_cost', 'from_store_number', 'to_store_number']);
 
+        $blueLineCurrent = (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$weekStart->toDateString(), $day->toDateString()])
+            ->where('vendor_name', 'like', '%BLUE LINE%')
+            ->sum('invoice_total');
+
+        $blueLinePrevious = (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$prevWeekStart->toDateString(), $prevWeekEnd->toDateString()])
+            ->where('vendor_name', 'like', '%BLUE LINE%')
+            ->sum('invoice_total');
+
         return [
             'filtering' => [
                 'store' => $store,
@@ -179,6 +189,10 @@ class ReportsController extends Controller
                 'current_week' => $this->salesTotal($store, $weekStart, $day),
                 'previous_week' => $this->salesTotal($store, $prevWeekStart, $prevWeekEnd),
             ],
+            'blue_line' => [
+                'current_week' => round($blueLineCurrent, 2),
+                'previous_week' => round($blueLinePrevious, 2),
+            ]
         ];
     }
 
