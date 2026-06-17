@@ -54,6 +54,58 @@ class ReportsController extends Controller
         'fulfilled' => ['Register', 'Drive-Thru'],
     ];
 
+    // -----------------------------------------------------------------
+    // Store score configuration
+    //
+    // The store score is a 0–100 weekly (week-to-date) performance grade.
+    // Category maxima sum to exactly 100. Goal metrics are created at
+    // runtime (not seeded), so their ids live here for easy per-env change.
+    // -----------------------------------------------------------------
+
+    /** score >= threshold => label (kept descending). */
+    private const STORE_SCORE_LABELS = [
+        80 => 'Fantastic +',
+        70 => 'Fantastic',
+        60 => 'Good',
+        50 => 'Fair',
+        0  => 'Poor',
+    ];
+
+    /** goal_metric_id for each scored metric. */
+    private const SCORE_GOAL_METRIC_IDS = [
+        'sales'           => 4,
+        'normal_hours'    => 9,
+        'overtime_hours'  => 10,
+        'portal'          => 11,
+        'hnr'             => 12,
+        'orders_vs_sales' => 15,
+    ];
+
+    /** entered_keys ids feeding the score. */
+    private const SCORE_KEY_NORMAL_HOURS   = 25;
+    private const SCORE_KEY_OVERTIME_HOURS = 26;
+    private const SCORE_KEY_ITEMS_OFF      = 27;
+
+    /** Maximum points per category (sum = 100). */
+    private const SCORE_MAX = [
+        'normal_hours'     => 35,
+        'overtime_hours'   => 15,
+        'portal'           => 10,
+        'hnr'              => 10,
+        'transfer_in'      => 7.5,
+        'items_turned_off' => 7.5,
+        'orders_vs_sales'  => 15,
+    ];
+
+    /** Whole-score deduction per non-negotiable entry. */
+    private const NON_NEGOTIABLE_DOWNTIME_PENALTY = 25;
+    private const NON_NEGOTIABLE_OTHER_PENALTY    = 35;
+
+    /** Sales dollars that shift the hours goals by one flex step. */
+    private const SCORE_FLEX_DOLLARS_PER_STEP   = 1000;
+    private const SCORE_FLEX_NORMAL_HOURS_STEP  = 6;
+    private const SCORE_FLEX_OVERTIME_HOURS_STEP = 2;
+
     /**
      * Request-scoped memoization cache.
      *
@@ -482,6 +534,22 @@ class ReportsController extends Controller
                 $hourlyData['grubhub_sales']
             );
         }
+
+        // Goals overlapping the report week (reused by goal_metrics + store score).
+        $goalMetrics = $this->getGoalsForStoreDate($store, $date);
+
+        $storeScore = $this->computeStoreScore(
+            $store,
+            $weekStart,
+            $day,
+            $weekToDateDayCount,
+            $previousWeekByDay,
+            $prevWeekStart,
+            $previousWeekTotal,
+            $weekToDateSalesTotal,
+            $goalMetrics
+        );
+
         return [
             'filtering' => [
                 'store' => $store,
@@ -490,7 +558,7 @@ class ReportsController extends Controller
                 'week_start' => $weekStart->toDateString(),
                 'week_end' => $weekEnd->toDateString(),
             ],
-            'goal_metrics' => $this->getGoalsForStoreDate($store, $date),
+            'goal_metrics' => $goalMetrics,
             'sales' => [
                 'this_week_by_day' => $thisWeekByDay,
                 'previous_week_by_day' => $previousWeekByDay,
@@ -610,6 +678,7 @@ class ReportsController extends Controller
                     'week_to_date_avg' => $weekToDatePortalAvg,
                 ]),
             ],
+            'store_score' => $storeScore,
         ];
     }
 
@@ -662,6 +731,517 @@ class ReportsController extends Controller
             ];
         })->toArray();
     }
+
+    // ---------------------------------------------------------------------
+    // Store score (0–100 weekly performance grade)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Week-to-date store score (0–100), its label, and a per-category
+     * breakdown. Reuses data already gathered by buildReport():
+     * previous-week sales-by-day (hours proration), week-to-date sales,
+     * and the overlapping goal metrics — only small lookups are added.
+     */
+    private function computeStoreScore(
+        string $store,
+        CarbonImmutable $weekStart,
+        CarbonImmutable $day,
+        int $weekToDateDayCount,
+        array $previousWeekByDay,
+        CarbonImmutable $prevWeekStart,
+        float $previousWeekTotal,
+        float $weekToDateSalesTotal,
+        array $goalMetrics
+    ): array {
+        // Per-day rows shared by the HnR and portal daily-mean calcs (one query).
+        $dailyRows = $this->dailySummaryRowsForRange($store, $weekStart, $day);
+
+        $hours = $this->scoreHours(
+            $store,
+            $weekStart,
+            $day,
+            $weekToDateDayCount,
+            $previousWeekByDay,
+            $prevWeekStart,
+            $previousWeekTotal,
+            $weekToDateSalesTotal,
+            $goalMetrics
+        );
+
+        $details = [
+            $hours['normal_hours'],
+            $hours['overtime_hours'],
+            $this->scorePortal(
+                $dailyRows,
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['portal'])
+            ),
+            $this->scoreHnr(
+                $dailyRows,
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
+            ),
+            $this->scoreTransferIn($store, $weekStart, $day),
+            $this->scoreItemsTurnedOff($store, $weekStart, $day),
+            $this->scoreOrdersVsSales(
+                $store,
+                $weekStart,
+                $day,
+                $weekToDateSalesTotal,
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['orders_vs_sales'])
+            ),
+        ];
+
+        $rawScore = 0.0;
+        foreach ($details as $detail) {
+            $rawScore += (float) $detail['score'];
+        }
+
+        $nonNegotiable = $this->scoreNonNegotiablePenalty($store, $weekStart, $day);
+
+        $score = max(0.0, $rawScore - $nonNegotiable['penalty']);
+
+        return [
+            'score' => round($score, 2),
+            'label' => $this->labelForScore($score),
+            'details' => $details,
+            'non_negotiable' => $nonNegotiable,
+            'raw_score' => round($rawScore, 2),
+        ];
+    }
+
+    /**
+     * Normal-hours (max 35) and overtime-hours (max 15) categories.
+     *
+     * Weekly goals are prorated to "so far" by last week's sales
+     * distribution, then flex-adjusted by week-to-date sales vs goal
+     * ($1000 => 6 normal / 2 overtime hours). The deduction branches and
+     * the literal *2 / *3 multipliers mirror the source spreadsheet.
+     */
+    private function scoreHours(
+        string $store,
+        CarbonImmutable $weekStart,
+        CarbonImmutable $day,
+        int $weekToDateDayCount,
+        array $previousWeekByDay,
+        CarbonImmutable $prevWeekStart,
+        float $previousWeekTotal,
+        float $weekToDateSalesTotal,
+        array $goalMetrics
+    ): array {
+        $normalMax = self::SCORE_MAX['normal_hours'];
+        $otMax = self::SCORE_MAX['overtime_hours'];
+
+        $salesGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['sales']);
+        $normalGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours']);
+        $otGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['overtime_hours']);
+
+        // Prorate fraction W: share of last week's sales falling on the elapsed days.
+        if ($previousWeekTotal > 0) {
+            $w = 0.0;
+            for ($i = 0; $i < $weekToDateDayCount; $i++) {
+                $dateKey = $prevWeekStart->addDays($i)->toDateString();
+                $w += (float) ($previousWeekByDay[$dateKey] ?? 0.0) / $previousWeekTotal;
+            }
+        } else {
+            $w = $weekToDateDayCount / 7;
+        }
+
+        $actNormal = $this->enteredKeyValueLatest($store, self::SCORE_KEY_NORMAL_HOURS, $weekStart, $day);
+        $actOt = $this->enteredKeyValueLatest($store, self::SCORE_KEY_OVERTIME_HOURS, $weekStart, $day);
+
+        $haveGoals = $salesGoal !== null && $normalGoal !== null && $otGoal !== null;
+
+        if ($haveGoals) {
+            $origNormal = $normalGoal * $w;
+            $origOt = $otGoal * $w;
+            $proratedSalesGoal = $salesGoal * $w;
+            $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
+            $steps = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+            $updNormal = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+            $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+
+            [$normalScore, $normalCase] = $this->normalHoursScore($origNormal, $updNormal, $actNormal);
+            $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal);
+        } else {
+            $origNormal = $origOt = $proratedSalesGoal = 0.0;
+            $salesDiff = $steps = $updNormal = $updOt = 0.0;
+            $normalScore = $otScore = 0.0;
+            $normalCase = 0;
+        }
+
+        return [
+            'normal_hours' => [
+                'key' => 'normal_hours',
+                'label' => 'Normal Hours',
+                'score' => round($normalScore, 2),
+                'max' => $normalMax,
+                'actual_hours' => round($actNormal, 2),
+                'weekly_goal' => $normalGoal,
+                'prorate_fraction' => round($w, 4),
+                'original_goal' => round($origNormal, 2),
+                'updated_goal' => round($updNormal, 2),
+                'prorated_sales_goal' => round($proratedSalesGoal, 2),
+                'week_to_date_sales' => round($weekToDateSalesTotal, 2),
+                'sales_diff' => round($salesDiff, 2),
+                'days_elapsed' => $weekToDateDayCount,
+                'case' => $normalCase,
+            ],
+            'overtime_hours' => [
+                'key' => 'overtime_hours',
+                'label' => 'Overtime Hours',
+                'score' => round($otScore, 2),
+                'max' => $otMax,
+                'actual_overtime_hours' => round($actOt, 2),
+                'weekly_goal' => $otGoal,
+                'original_goal' => round($origOt, 2),
+                'updated_goal' => round($updOt, 2),
+                'normal_goal_denominator' => round($updNormal, 2),
+            ],
+        ];
+    }
+
+    /**
+     * Normal-hours score (out of 35) for given original (prorated) goal,
+     * sales-adjusted goal, and actual hours. Pure translation of the source
+     * spreadsheet formula (literal *2 / *3 multipliers). Returns [score, case].
+     */
+    private function normalHoursScore(float $origNormal, float $updNormal, float $actNormal): array
+    {
+        if ($updNormal <= 0) {
+            return [0.0, 0];
+        }
+
+        if ($updNormal >= $origNormal && $actNormal >= $updNormal) {
+            $deduction = (($actNormal - $updNormal) / $updNormal) * 2;
+            $case = 1;
+        } elseif ($updNormal >= $origNormal && $actNormal >= $origNormal) {
+            $deduction = 0.0;
+            $case = 2;
+        } elseif ($updNormal >= $origNormal && $actNormal <= $origNormal) {
+            $deduction = ($updNormal - $actNormal) / $updNormal;
+            $case = 3;
+        } elseif ($updNormal <= $origNormal && $actNormal >= $origNormal) {
+            $deduction = (($actNormal - $updNormal) / $updNormal) * 3;
+            $case = 4;
+        } elseif ($updNormal <= $origNormal && $actNormal <= $updNormal) {
+            $deduction = (($updNormal - $actNormal) / $updNormal) * 2;
+            $case = 5;
+        } else {
+            $deduction = (($actNormal - $updNormal) / $updNormal) * 2;
+            $case = 6;
+        }
+
+        // Formula yields a fraction of 1.0; the 0.35 cap maps to 35 points.
+        return [max(0.0, 0.35 - $deduction) * 100, $case];
+    }
+
+    /**
+     * Overtime-hours score (out of 15). Full points when actual <= goal;
+     * otherwise penalized by the gap relative to the updated NORMAL goal.
+     */
+    private function overtimeHoursScore(float $updOt, float $actOt, float $updNormal): float
+    {
+        if ($updNormal <= 0) {
+            return 0.0;
+        }
+
+        if ($actOt <= $updOt) {
+            return 0.15 * 100;
+        }
+
+        return max(0.0, 0.15 - (abs($updOt - $actOt) / $updNormal) * 2) * 100;
+    }
+
+    /**
+     * Portal category (max 10): per-day mean of (put-into-portal% +
+     * in-portal-on-time%)/2 across days with eligible orders, compared to
+     * the portal goal. Only penalized when below goal.
+     */
+    private function scorePortal(array $dailyRows, ?float $goal): array
+    {
+        $max = self::SCORE_MAX['portal'];
+        $daily = [];
+        $sum = 0.0;
+        $count = 0;
+
+        foreach ($dailyRows as $row) {
+            $eligible = (int) ($row->portal_eligible_orders ?? 0);
+            if ($eligible <= 0) {
+                continue;
+            }
+            $used = (int) ($row->portal_used_orders ?? 0);
+            $onTime = (int) ($row->portal_on_time_orders ?? 0);
+            $putPct = ($used / $eligible) * 100;
+            $onTimePct = $used > 0 ? ($onTime / $used) * 100 : 0.0;
+            $dayScore = ($putPct + $onTimePct) / 2;
+
+            $daily[CarbonImmutable::parse($row->business_date)->toDateString()] = round($dayScore, 2);
+            $sum += $dayScore;
+            $count++;
+        }
+
+        [$score, $actual] = $this->percentVsGoalBelowOnly($sum, $count, $goal, $max);
+
+        return [
+            'key' => 'portal',
+            'label' => 'Portal',
+            'score' => $score,
+            'max' => $max,
+            'actual_percent' => $actual,
+            'goal_percent' => $goal,
+            'days_counted' => $count,
+            'daily' => $daily,
+        ];
+    }
+
+    /**
+     * HnR category (max 10): mean of each day's promise-met % across days
+     * with transactions, compared to the HnR goal. Only penalized below goal.
+     */
+    private function scoreHnr(array $dailyRows, ?float $goal): array
+    {
+        $max = self::SCORE_MAX['hnr'];
+        $daily = [];
+        $sum = 0.0;
+        $count = 0;
+
+        foreach ($dailyRows as $row) {
+            $transactions = (int) ($row->hnr_transactions ?? 0);
+            if ($transactions <= 0) {
+                continue;
+            }
+            $broken = (int) ($row->hnr_broken_promises ?? 0);
+            $pct = (($transactions - $broken) / $transactions) * 100;
+
+            $daily[CarbonImmutable::parse($row->business_date)->toDateString()] = round($pct, 2);
+            $sum += $pct;
+            $count++;
+        }
+
+        [$score, $actual] = $this->percentVsGoalBelowOnly($sum, $count, $goal, $max);
+
+        return [
+            'key' => 'hnr',
+            'label' => 'HnR',
+            'score' => $score,
+            'max' => $max,
+            'actual_percent' => $actual,
+            'goal_percent' => $goal,
+            'days_counted' => $count,
+            'daily' => $daily,
+        ];
+    }
+
+    /**
+     * Transfer-in category (max 7.5): zero if any transfer INTO this store
+     * (to_store_number) exists within the range, otherwise full points.
+     */
+    private function scoreTransferIn(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $max = self::SCORE_MAX['transfer_in'];
+        $count = TransferInOut::where('to_store_number', $store)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->count();
+        $has = $count > 0;
+
+        return [
+            'key' => 'transfer_in',
+            'label' => 'Transfer In',
+            'score' => $has ? 0.0 : (float) $max,
+            'max' => $max,
+            'has_transfer_in' => $has,
+            'transfer_in_count' => $count,
+        ];
+    }
+
+    /**
+     * Items-turned-off category (max 7.5): sum of entered-key 27 over the
+     * range. 0 => full, 1 => lose 3.5, 2+ => zero.
+     */
+    private function scoreItemsTurnedOff(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $max = self::SCORE_MAX['items_turned_off'];
+        $sum = $this->enteredKeyValueSumForRange($store, self::SCORE_KEY_ITEMS_OFF, $start, $end);
+
+        if ($sum <= 0) {
+            $score = (float) $max;
+        } elseif ($sum < 2) {
+            $score = (float) $max - 3.5;
+        } else {
+            $score = 0.0;
+        }
+
+        return [
+            'key' => 'items_turned_off',
+            'label' => 'Items Turned Off',
+            'score' => round($score, 2),
+            'max' => $max,
+            'count' => $sum,
+        ];
+    }
+
+    /**
+     * Orders-vs-sales category (max 15): Blue Line invoice total as a % of
+     * week-to-date sales, compared symmetrically to the goal (each point of
+     * difference, over or under, costs 1).
+     */
+    private function scoreOrdersVsSales(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end,
+        float $weekToDateSalesTotal,
+        ?float $goal
+    ): array {
+        $max = self::SCORE_MAX['orders_vs_sales'];
+        $blueLine = $this->blueLineTotalForRange($store, $start, $end);
+        $actual = $weekToDateSalesTotal > 0
+            ? round(($blueLine / $weekToDateSalesTotal) * 100, 2)
+            : 0.0;
+
+        if ($goal === null) {
+            $score = 0.0;
+        } else {
+            $score = max(0.0, $max - abs($actual - $goal));
+        }
+
+        return [
+            'key' => 'orders_vs_sales',
+            'label' => 'Orders vs Sales',
+            'score' => round($score, 2),
+            'max' => $max,
+            'actual_percent' => $actual,
+            'goal_percent' => $goal,
+            'blue_line_total' => round($blueLine, 2),
+            'week_to_date_sales' => round($weekToDateSalesTotal, 2),
+        ];
+    }
+
+    /**
+     * Whole-score deduction for non-negotiable entries in the range:
+     * 25 per "Downtime", 35 per any other action.
+     */
+    private function scoreNonNegotiablePenalty(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $actions = NonNegotiableReport::where('store_number', $store)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->pluck('action');
+
+        $downtime = 0;
+        $other = 0;
+        foreach ($actions as $action) {
+            if ($action === 'Downtime') {
+                $downtime++;
+            } else {
+                $other++;
+            }
+        }
+
+        $penalty = $downtime * self::NON_NEGOTIABLE_DOWNTIME_PENALTY
+            + $other * self::NON_NEGOTIABLE_OTHER_PENALTY;
+
+        return [
+            'entries' => $downtime + $other,
+            'downtime' => $downtime,
+            'other' => $other,
+            'penalty' => $penalty,
+        ];
+    }
+
+    /**
+     * Score a percentage metric that is only penalized below its goal
+     * (HnR, portal). Returns [score, actual_percent]; no qualifying day =>
+     * full points (nothing to penalize); missing goal => zero.
+     */
+    private function percentVsGoalBelowOnly(float $sum, int $count, ?float $goal, float $max): array
+    {
+        if ($count === 0) {
+            return [(float) $max, null];
+        }
+
+        $actual = round($sum / $count, 2);
+
+        if ($goal === null) {
+            return [0.0, $actual];
+        }
+
+        $below = max(0.0, $goal - $actual);
+
+        return [round(max(0.0, $max - $below), 2), $actual];
+    }
+
+    /** Pick the label for the highest threshold the score meets. */
+    private function labelForScore(float $score): string
+    {
+        foreach (self::STORE_SCORE_LABELS as $threshold => $label) {
+            if ($score >= $threshold) {
+                return $label;
+            }
+        }
+
+        return 'Poor';
+    }
+
+    /** First goal value for a metric id in the already-built goal_metrics array. */
+    private function goalValueFromMetrics(array $goalMetrics, int $metricId): ?float
+    {
+        foreach ($goalMetrics as $metric) {
+            if ((int) ($metric['metric_id'] ?? 0) === $metricId) {
+                $goals = $metric['goals'] ?? [];
+
+                return $goals === [] ? null : (float) ($goals[0]['goal'] ?? 0);
+            }
+        }
+
+        return null;
+    }
+
+    /** Latest entered-key value for a store within the range (0 if none). */
+    private function enteredKeyValueLatest(
+        string $store,
+        int $keyId,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
+        $row = EnteredKeyValue::query()
+            ->where('store_id', $store)
+            ->where('key_id', $keyId)
+            ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->orderBy('entry_date', 'desc')
+            ->orderBy('id', 'desc')
+            ->first(['value_number']);
+
+        return $row !== null ? (float) $row->value_number : 0.0;
+    }
+
+    /** Per-day summary rows for HnR + portal daily means (memoized, one query). */
+    private function dailySummaryRowsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $key = "dailySummaryRows:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn(): array => DailyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->orderBy('business_date')
+            ->get([
+                'business_date',
+                'hnr_transactions',
+                'hnr_broken_promises',
+                'portal_eligible_orders',
+                'portal_used_orders',
+                'portal_on_time_orders',
+            ])
+            ->all());
+    }
+
+    /** Blue Line invoice total for a store within the range (memoized). */
+    private function blueLineTotalForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): float
+    {
+        $key = "blueLineTotalForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn(): float => (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
+            ->where('vendor_name', 'like', '%BLUE LINE%')
+            ->sum('invoice_total'));
+    }
+
     // ---------------------------------------------------------------------
     // Validation
     // ---------------------------------------------------------------------
