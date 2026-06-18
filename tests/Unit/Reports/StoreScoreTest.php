@@ -126,42 +126,9 @@ class StoreScoreTest extends TestCase
         $this->assertEqualsWithDelta(0.0, $this->call('overtimeHoursScore', [10.0, 12.0, 0.0]), 0.01);
     }
 
-    // ------------------------------------------------ percent vs goal (below)
-
-    #[DataProvider('percentVsGoalCases')]
-    public function test_percent_vs_goal_below_only(
-        float $sum,
-        int $count,
-        ?float $goal,
-        float $max,
-        float $expectedScore,
-        ?float $expectedActual
-    ): void {
-        [$score, $actual] = $this->call('percentVsGoalBelowOnly', [$sum, $count, $goal, $max]);
-
-        $this->assertEqualsWithDelta($expectedScore, $score, 0.01);
-        if ($expectedActual === null) {
-            $this->assertNull($actual);
-        } else {
-            $this->assertEqualsWithDelta($expectedActual, $actual, 0.01);
-        }
-    }
-
-    public static function percentVsGoalCases(): array
-    {
-        return [
-            'no data -> full points'      => [0.0, 0, 90.0, 10.0, 10.0, null],
-            'missing goal -> zero'        => [180.0, 2, null, 10.0, 0.0, 90.0],
-            'at goal -> full'             => [180.0, 2, 90.0, 10.0, 10.0, 90.0],
-            'above goal -> full'          => [190.0, 2, 90.0, 10.0, 10.0, 95.0],
-            'below by 3 -> lose 3'        => [174.0, 2, 90.0, 10.0, 7.0, 87.0],
-            'below beyond max -> floor 0' => [150.0, 2, 90.0, 10.0, 0.0, 75.0],
-        ];
-    }
-
     // -------------------------------------------------------------- portal
 
-    public function test_portal_mean_of_daily_at_goal(): void
+    public function test_portal_totals_based_actual(): void
     {
         $rows = [
             $this->row([
@@ -182,8 +149,8 @@ class StoreScoreTest extends TestCase
 
         $this->assertSame('portal', $detail['key']);
         $this->assertSame(2, $detail['days_counted']);
-        $this->assertEqualsWithDelta(90.0, $detail['actual_percent'], 0.01);
-        $this->assertEqualsWithDelta(10.0, $detail['score'], 0.01);
+        $this->assertEqualsWithDelta(89.87, $detail['actual_percent'], 0.01);
+        $this->assertEqualsWithDelta(9.87, $detail['score'], 0.01);
         $this->assertEqualsWithDelta(90.0, $detail['daily']['2026-06-16'], 0.01);
         $this->assertArrayNotHasKey('2026-06-18', $detail['daily']);
     }
@@ -204,7 +171,7 @@ class StoreScoreTest extends TestCase
 
     // ----------------------------------------------------------------- hnr
 
-    public function test_hnr_mean_of_daily(): void
+    public function test_hnr_totals_based_actual(): void
     {
         $rows = [
             $this->row(['business_date' => '2026-06-16', 'hnr_transactions' => 100, 'hnr_broken_promises' => 10]), // 90

@@ -960,8 +960,10 @@ class ReportsController extends Controller
     {
         $max = self::SCORE_MAX['portal'];
         $daily = [];
-        $sum = 0.0;
         $count = 0;
+        $totalEligible = 0;
+        $totalUsed = 0;
+        $totalOnTime = 0;
 
         foreach ($dailyRows as $row) {
             $eligible = (int) ($row->portal_eligible_orders ?? 0);
@@ -975,11 +977,26 @@ class ReportsController extends Controller
             $dayScore = ($putPct + $onTimePct) / 2;
 
             $daily[CarbonImmutable::parse($row->business_date)->toDateString()] = round($dayScore, 2);
-            $sum += $dayScore;
+            $totalEligible += $eligible;
+            $totalUsed += $used;
+            $totalOnTime += $onTime;
             $count++;
         }
 
-        [$score, $actual] = $this->percentVsGoalBelowOnly($sum, $count, $goal, $max);
+        if ($totalEligible === 0) {
+            $score = (float) $max;
+            $actual = null;
+        } else {
+            $putPct = ($totalUsed / $totalEligible) * 100;
+            $onTimePct = $totalUsed > 0 ? ($totalOnTime / $totalUsed) * 100 : 0.0;
+            $actual = round(($putPct + $onTimePct) / 2, 2);
+            if ($goal === null) {
+                $score = 0.0;
+            } else {
+                $below = max(0.0, $goal - $actual);
+                $score = round(max(0.0, $max - $below), 2);
+            }
+        }
 
         return [
             'key' => 'portal',
@@ -1001,8 +1018,9 @@ class ReportsController extends Controller
     {
         $max = self::SCORE_MAX['hnr'];
         $daily = [];
-        $sum = 0.0;
         $count = 0;
+        $totalTransactions = 0;
+        $totalBroken = 0;
 
         foreach ($dailyRows as $row) {
             $transactions = (int) ($row->hnr_transactions ?? 0);
@@ -1013,11 +1031,23 @@ class ReportsController extends Controller
             $pct = (($transactions - $broken) / $transactions) * 100;
 
             $daily[CarbonImmutable::parse($row->business_date)->toDateString()] = round($pct, 2);
-            $sum += $pct;
+            $totalTransactions += $transactions;
+            $totalBroken += $broken;
             $count++;
         }
 
-        [$score, $actual] = $this->percentVsGoalBelowOnly($sum, $count, $goal, $max);
+        if ($totalTransactions === 0) {
+            $score = (float) $max;
+            $actual = null;
+        } else {
+            $actual = round(($totalTransactions - $totalBroken) / $totalTransactions * 100, 2);
+            if ($goal === null) {
+                $score = 0.0;
+            } else {
+                $below = max(0.0, $goal - $actual);
+                $score = round(max(0.0, $max - $below), 2);
+            }
+        }
 
         return [
             'key' => 'hnr',
@@ -1144,28 +1174,6 @@ class ReportsController extends Controller
             'other' => $other,
             'penalty' => $penalty,
         ];
-    }
-
-    /**
-     * Score a percentage metric that is only penalized below its goal
-     * (HnR, portal). Returns [score, actual_percent]; no qualifying day =>
-     * full points (nothing to penalize); missing goal => zero.
-     */
-    private function percentVsGoalBelowOnly(float $sum, int $count, ?float $goal, float $max): array
-    {
-        if ($count === 0) {
-            return [(float) $max, null];
-        }
-
-        $actual = round($sum / $count, 2);
-
-        if ($goal === null) {
-            return [0.0, $actual];
-        }
-
-        $below = max(0.0, $goal - $actual);
-
-        return [round(max(0.0, $max - $below), 2), $actual];
     }
 
     /** Pick the label for the highest threshold the score meets. */
