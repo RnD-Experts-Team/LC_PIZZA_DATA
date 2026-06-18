@@ -961,9 +961,8 @@ class ReportsController extends Controller
         $max = self::SCORE_MAX['portal'];
         $daily = [];
         $count = 0;
-        $totalEligible = 0;
-        $totalUsed = 0;
-        $totalOnTime = 0;
+        $sumPutPct = 0.0;
+        $sumOnTimePct = 0.0;
 
         foreach ($dailyRows as $row) {
             $eligible = (int) ($row->portal_eligible_orders ?? 0);
@@ -977,19 +976,20 @@ class ReportsController extends Controller
             $dayScore = ($putPct + $onTimePct) / 2;
 
             $daily[CarbonImmutable::parse($row->business_date)->toDateString()] = round($dayScore, 2);
-            $totalEligible += $eligible;
-            $totalUsed += $used;
-            $totalOnTime += $onTime;
+            $sumPutPct += $putPct;
+            $sumOnTimePct += $onTimePct;
             $count++;
         }
 
-        if ($totalEligible === 0) {
+        if ($count === 0) {
             $score = (float) $max;
             $actual = null;
+            $avgPutPct = null;
+            $avgOnTimePct = null;
         } else {
-            $putPct = ($totalUsed / $totalEligible) * 100;
-            $onTimePct = $totalUsed > 0 ? ($totalOnTime / $totalUsed) * 100 : 0.0;
-            $actual = round(($putPct + $onTimePct) / 2, 2);
+            $avgPutPct = round($sumPutPct / $count, 2);
+            $avgOnTimePct = round($sumOnTimePct / $count, 2);
+            $actual = round(($avgPutPct + $avgOnTimePct) / 2, 2);
             if ($goal === null) {
                 $score = 0.0;
             } else {
@@ -1004,6 +1004,8 @@ class ReportsController extends Controller
             'score' => $score,
             'max' => $max,
             'actual_percent' => $actual,
+            'avg_put_into_portal_percent' => $avgPutPct,
+            'avg_in_portal_on_time_percent' => $avgOnTimePct,
             'goal_percent' => $goal,
             'days_counted' => $count,
             'daily' => $daily,
@@ -1800,16 +1802,12 @@ class ReportsController extends Controller
 
     private function portalMetricsAverage(array $metrics, int $days): array
     {
-        $eligible = $this->averageValue((float) ($metrics['portal_eligible_orders'] ?? 0), $days);
-        $used = $this->averageValue((float) ($metrics['portal_used_orders'] ?? 0), $days);
-        $onTime = $this->averageValue((float) ($metrics['portal_on_time_orders'] ?? 0), $days);
-
         return [
-            'portal_eligible_orders' => $eligible,
-            'portal_used_orders' => $used,
-            'portal_on_time_orders' => $onTime,
-            'put_into_portal_percent' => $eligible > 0 ? round(($used / $eligible) * 100, 2) : 0,
-            'in_portal_on_time_percent' => $used > 0 ? round(($onTime / $used) * 100, 2) : 0,
+            'portal_eligible_orders' => $this->averageValue((float) ($metrics['portal_eligible_orders'] ?? 0), $days),
+            'portal_used_orders' => $this->averageValue((float) ($metrics['portal_used_orders'] ?? 0), $days),
+            'portal_on_time_orders' => $this->averageValue((float) ($metrics['portal_on_time_orders'] ?? 0), $days),
+            'put_into_portal_percent' => (float) ($metrics['put_into_portal_percent'] ?? 0),
+            'in_portal_on_time_percent' => (float) ($metrics['in_portal_on_time_percent'] ?? 0),
         ];
     }
 
@@ -2209,28 +2207,38 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
-        $eligible = $this->summaryQuery->getPortalEligibleOrders(
-            $store,
-            $start->toMutable(),
-            $end->toMutable()
-        );
-        $used = $this->summaryQuery->getPortalUsedOrders(
-            $store,
-            $start->toMutable(),
-            $end->toMutable()
-        );
-        $onTime = $this->summaryQuery->getPortalOnTimeOrders(
-            $store,
-            $start->toMutable(),
-            $end->toMutable()
-        );
+        $rows = DailyStoreSummary::where('franchise_store', $store)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->get(['portal_eligible_orders', 'portal_used_orders', 'portal_on_time_orders']);
+
+        $totalEligible = 0;
+        $totalUsed = 0;
+        $totalOnTime = 0;
+        $sumPutPct = 0.0;
+        $sumOnTimePct = 0.0;
+        $count = 0;
+
+        foreach ($rows as $row) {
+            $eligible = (int) ($row->portal_eligible_orders ?? 0);
+            $used = (int) ($row->portal_used_orders ?? 0);
+            $onTime = (int) ($row->portal_on_time_orders ?? 0);
+            $totalEligible += $eligible;
+            $totalUsed += $used;
+            $totalOnTime += $onTime;
+
+            if ($eligible > 0) {
+                $sumPutPct += ($used / $eligible) * 100;
+                $sumOnTimePct += $used > 0 ? ($onTime / $used) * 100 : 0.0;
+                $count++;
+            }
+        }
 
         return [
-            'portal_eligible_orders' => $eligible,
-            'portal_used_orders' => $used,
-            'portal_on_time_orders' => $onTime,
-            'put_into_portal_percent' => $eligible > 0 ? round(($used / $eligible) * 100, 2) : 0,
-            'in_portal_on_time_percent' => $used > 0 ? round(($onTime / $used) * 100, 2) : 0,
+            'portal_eligible_orders' => $totalEligible,
+            'portal_used_orders' => $totalUsed,
+            'portal_on_time_orders' => $totalOnTime,
+            'put_into_portal_percent' => $count > 0 ? round($sumPutPct / $count, 2) : 0,
+            'in_portal_on_time_percent' => $count > 0 ? round($sumOnTimePct / $count, 2) : 0,
         ];
     }
 
