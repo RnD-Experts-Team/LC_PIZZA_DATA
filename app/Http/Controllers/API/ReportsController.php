@@ -68,42 +68,42 @@ class ReportsController extends Controller
         70 => 'Fantastic',
         60 => 'Good',
         50 => 'Fair',
-        0  => 'Poor',
+        0 => 'Poor',
     ];
 
     /** goal_metric_id for each scored metric. */
     private const SCORE_GOAL_METRIC_IDS = [
-        'sales'           => 4,
-        'normal_hours'    => 9,
-        'overtime_hours'  => 10,
-        'portal'          => 11,
-        'hnr'             => 12,
+        'sales' => 4,
+        'normal_hours' => 9,
+        'overtime_hours' => 10,
+        'portal' => 11,
+        'hnr' => 12,
         'orders_vs_sales' => 15,
     ];
 
     /** entered_keys ids feeding the score. */
-    private const SCORE_KEY_NORMAL_HOURS   = 25;
+    private const SCORE_KEY_NORMAL_HOURS = 25;
     private const SCORE_KEY_OVERTIME_HOURS = 26;
-    private const SCORE_KEY_ITEMS_OFF      = 27;
+    private const SCORE_KEY_ITEMS_OFF = 27;
 
     /** Maximum points per category (sum = 100). */
     private const SCORE_MAX = [
-        'normal_hours'     => 35,
-        'overtime_hours'   => 15,
-        'portal'           => 10,
-        'hnr'              => 10,
-        'transfer_in'      => 7.5,
+        'normal_hours' => 35,
+        'overtime_hours' => 15,
+        'portal' => 10,
+        'hnr' => 10,
+        'transfer_in' => 7.5,
         'items_turned_off' => 7.5,
-        'orders_vs_sales'  => 15,
+        'orders_vs_sales' => 15,
     ];
 
     /** Whole-score deduction per non-negotiable entry. */
     private const NON_NEGOTIABLE_DOWNTIME_PENALTY = 25;
-    private const NON_NEGOTIABLE_OTHER_PENALTY    = 35;
+    private const NON_NEGOTIABLE_OTHER_PENALTY = 35;
 
     /** Sales dollars that shift the hours goals by one flex step. */
-    private const SCORE_FLEX_DOLLARS_PER_STEP   = 1000;
-    private const SCORE_FLEX_NORMAL_HOURS_STEP  = 6;
+    private const SCORE_FLEX_DOLLARS_PER_STEP = 1000;
+    private const SCORE_FLEX_NORMAL_HOURS_STEP = 6;
     private const SCORE_FLEX_OVERTIME_HOURS_STEP = 2;
 
     /**
@@ -2295,7 +2295,7 @@ class ReportsController extends Controller
         CarbonImmutable $end,
         float $storeTotalSales
     ): array {
-        $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
+        $queries = DatabaseRouter::routedQueries('order_line', $start->toMutable(), $end->toMutable());
         $union = array_shift($queries);
         foreach ($queries as $q) {
             $union->unionAll($q);
@@ -2308,13 +2308,13 @@ class ReportsController extends Controller
             ->where('modification_reason', '<>', '')
             ->selectRaw("
                 modification_reason,
-                COALESCE(SUM(royalty_obligation), 0) as promo_sales,
+                COALESCE(SUM(net_amount), 0) as promo_sales,
                 COALESCE(SUM(CASE WHEN order_placed_method = 'Doordash'
-                    THEN royalty_obligation ELSE 0 END), 0) as doordash_sales,
+                    THEN net_amount ELSE 0 END), 0) as doordash_sales,
                 COALESCE(SUM(CASE WHEN order_placed_method IN ('UberEats','Uber Eats')
-                    THEN royalty_obligation ELSE 0 END), 0) as ubereats_sales,
+                    THEN net_amount ELSE 0 END), 0) as ubereats_sales,
                 COALESCE(SUM(CASE WHEN order_placed_method IN ('Grubhub','GrubHub')
-                    THEN royalty_obligation ELSE 0 END), 0) as grubhub_sales
+                    THEN net_amount ELSE 0 END), 0) as grubhub_sales
             ")
             ->groupBy('modification_reason')
             ->orderByDesc('promo_sales')
