@@ -202,7 +202,19 @@ class IntelligentAggregationService
             return ['operations' => $this->buildShortRangeOps($request)];
         }
 
-        // Long ranges: full intelligent strategy
+        // Time series over a long range: use a single daily granularity so the output is a
+        // clean per-day series (no mixed daily/weekly buckets). Daily reconciles exactly with
+        // the trusted daily grain.
+        if ($request['group_time']) {
+            return ['operations' => [[
+                'type' => '+',
+                'granularity' => 'daily',
+                'start' => $request['start_date'],
+                'end' => $request['end_date'],
+            ]]];
+        }
+
+        // Long ranges (aggregate total): cover with daily + Tue–Mon weekly buckets only.
         return $this->buildIntelligentStrategy($request['start_date'], $request['end_date']);
     }
 
@@ -353,44 +365,100 @@ class IntelligentAggregationService
     }
 
     /**
-     * Full cost-based optimizer: tries direct vs subtraction-based plans across granularities.
+     * Build a query plan that reconciles EXACTLY with the daily grain.
+     *
+     * Only `daily` and `weekly` summaries are safe to read here:
+     *   - weekly_store_summary is built directly from daily rows for its Tuesday–Monday span
+     *     (AggregationService::aggregateWeeklyStore), so a weekly bucket == the sum of its
+     *     7 daily rows.
+     *   - monthly/quarterly/yearly summaries are built by summing the Tue–Mon weekly rows that
+     *     merely OVERLAP a calendar period (AggregationService::aggregateMonthlyStore). A week
+     *     straddling a month boundary is counted in BOTH months, so a coarse bucket does NOT
+     *     equal the sum of that period's daily rows — it is inflated. They are therefore never
+     *     read for queries.
+     *
+     * NOTE: the cost-based coarse/subtraction strategy methods below this point
+     * (buildDirectOps, build*SubtractionOps, calculate*Cost, buildOptimalExclusion, …) are no
+     * longer reachable and are kept only for reference/history. Do not route plans through
+     * them — they read the inflated coarse tables and pull whole buckets that overhang the
+     * requested range.
      */
     private function buildIntelligentStrategy(DateTime $start, DateTime $end): array
     {
-        $costs = [
-            'direct_daily' => $this->calculateDirectCost($start, $end, 'daily'),
-            'direct_weekly' => $this->calculateDirectCost($start, $end, 'weekly'),
-            'direct_monthly' => $this->calculateDirectCost($start, $end, 'monthly'),
-            'direct_quarterly' => $this->calculateDirectCost($start, $end, 'quarterly'),
-            'direct_yearly' => $this->calculateDirectCost($start, $end, 'yearly'),
+        return ['operations' => $this->buildAdditiveCover($start, $end)];
+    }
 
-            'yearly_subtraction' => $this->calculateYearlySubtractionCost($start, $end),
-            'quarterly_subtraction' => $this->calculateQuarterlySubtractionCost($start, $end),
-            'monthly_subtraction' => $this->calculateMonthlySubtractionCost($start, $end),
+    /**
+     * Cover [start, end] with daily + Tuesday–Monday weekly buckets — no overlap, no gaps,
+     * every operation contributing only data inside the requested range:
+     *
+     *   [daily leading edge] + [one weekly op over the whole-week interior] + [daily trailing edge]
+     *
+     * The weekly WHERE clause (applyWhereConditions) matches on week_start_date/week_end_date
+     * overlap, so a weekly op aligned to [Tuesday, Monday] pulls exactly the interior weekly
+     * rows and never an adjacent week.
+     */
+    private function buildAdditiveCover(DateTime $start, DateTime $end): array
+    {
+        if ($start > $end) {
+            return [];
+        }
+
+        // First Tuesday on/after start (start of the first whole business week). Tue = 2 (ISO-N).
+        $firstTue = clone $start;
+        $addToTue = (2 - (int) $firstTue->format('N') + 7) % 7;
+        if ($addToTue > 0) {
+            $firstTue->modify("+{$addToTue} days");
+        }
+
+        // Last Monday on/before end (end of the last whole business week). Mon = 1 (ISO-N).
+        $lastMon = clone $end;
+        $subToMon = ((int) $lastMon->format('N') - 1 + 7) % 7;
+        if ($subToMon > 0) {
+            $lastMon->modify("-{$subToMon} days");
+        }
+
+        // No whole Tue–Mon week fits → read the daily rows directly.
+        if ($firstTue > $lastMon) {
+            return [[
+                'type' => '+',
+                'granularity' => 'daily',
+                'start' => clone $start,
+                'end' => clone $end,
+            ]];
+        }
+
+        $ops = [];
+
+        // Leading partial-week days: [start .. firstTue-1].
+        if ($firstTue > $start) {
+            $ops[] = [
+                'type' => '+',
+                'granularity' => 'daily',
+                'start' => clone $start,
+                'end' => (clone $firstTue)->modify('-1 day'),
+            ];
+        }
+
+        // Whole-week interior: [firstTue .. lastMon] as a single weekly op.
+        $ops[] = [
+            'type' => '+',
+            'granularity' => 'weekly',
+            'start' => clone $firstTue,
+            'end' => clone $lastMon,
         ];
 
-        if ($this->debugLevel > 0) {
-            echo "\nOptimizing period: {$start->format('Y-m-d')} to {$end->format('Y-m-d')}\n";
-            echo "Costs: " . json_encode($costs, JSON_PRETTY_PRINT) . "\n";
+        // Trailing partial-week days: [lastMon+1 .. end].
+        if ($lastMon < $end) {
+            $ops[] = [
+                'type' => '+',
+                'granularity' => 'daily',
+                'start' => (clone $lastMon)->modify('+1 day'),
+                'end' => clone $end,
+            ];
         }
 
-        $minCost = min($costs);
-        $bestApproach = array_search($minCost, $costs, true);
-
-        if ($this->debugLevel > 0) {
-            echo "Chosen: {$bestApproach} (cost: {$minCost})\n";
-        }
-
-        return match ($bestApproach) {
-            'yearly_subtraction' => ['operations' => $this->buildYearlySubtractionOps($start, $end)],
-            'quarterly_subtraction' => ['operations' => $this->buildQuarterlySubtractionOps($start, $end)],
-            'monthly_subtraction' => ['operations' => $this->buildMonthlySubtractionOps($start, $end)],
-            'direct_yearly' => ['operations' => $this->buildDirectOps($start, $end, 'yearly')],
-            'direct_quarterly' => ['operations' => $this->buildDirectOps($start, $end, 'quarterly')],
-            'direct_monthly' => ['operations' => $this->buildDirectOps($start, $end, 'monthly')],
-            'direct_weekly' => ['operations' => $this->buildDirectOps($start, $end, 'weekly')],
-            default => ['operations' => $this->buildDirectOps($start, $end, 'daily')],
-        };
+        return $ops;
     }
 
     private function calculateDirectCost(DateTime $start, DateTime $end, string $granularity): int
