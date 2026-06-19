@@ -202,19 +202,8 @@ class IntelligentAggregationService
             return ['operations' => $this->buildShortRangeOps($request)];
         }
 
-        // Time series over a long range: use a single daily granularity so the output is a
-        // clean per-day series (no mixed daily/weekly buckets). Daily reconciles exactly with
-        // the trusted daily grain.
-        if ($request['group_time']) {
-            return ['operations' => [[
-                'type' => '+',
-                'granularity' => 'daily',
-                'start' => $request['start_date'],
-                'end' => $request['end_date'],
-            ]]];
-        }
-
-        // Long ranges (aggregate total): cover with daily + Tue–Mon weekly buckets only.
+        // Long ranges: read the daily grain directly (see buildIntelligentStrategy). This is the
+        // only plan that reconciles exactly with a manual sum of daily store summaries.
         return $this->buildIntelligentStrategy($request['start_date'], $request['end_date']);
     }
 
@@ -365,17 +354,19 @@ class IntelligentAggregationService
     }
 
     /**
-     * Build a query plan that reconciles EXACTLY with the daily grain.
+     * Long-range plan: read the daily grain directly over the exact window.
      *
-     * Only `daily` and `weekly` summaries are safe to read here:
-     *   - weekly_store_summary is built directly from daily rows for its Tuesday–Monday span
-     *     (AggregationService::aggregateWeeklyStore), so a weekly bucket == the sum of its
-     *     7 daily rows.
-     *   - monthly/quarterly/yearly summaries are built by summing the Tue–Mon weekly rows that
-     *     merely OVERLAP a calendar period (AggregationService::aggregateMonthlyStore). A week
-     *     straddling a month boundary is counted in BOTH months, so a coarse bucket does NOT
-     *     equal the sum of that period's daily rows — it is inflated. They are therefore never
-     *     read for queries.
+     * This is the ONLY source that reconciles to the cent with a manual sum of daily store
+     * summaries, so it is what we use:
+     *   - A single daily op filters daily_store_summary on `business_date BETWEEN start AND end`
+     *     and SUMs in SQL — exactly the rows a human sums by hand. One indexed range scan.
+     *
+     * The coarse rollups are intentionally never read:
+     *   - monthly/quarterly/yearly are built by summing Tue–Mon weekly rows that OVERLAP a
+     *     calendar period (AggregationService::aggregateMonthlyStore), so a week straddling a
+     *     boundary is double-counted — the bucket is inflated and != the period's daily sum.
+     *   - weekly can lag the daily grain and is keyed on Tue–Mon spans that need not align to
+     *     an arbitrary requested window.
      *
      * NOTE: the cost-based coarse/subtraction strategy methods below this point
      * (buildDirectOps, build*SubtractionOps, calculate*Cost, buildOptimalExclusion, …) are no
@@ -385,80 +376,12 @@ class IntelligentAggregationService
      */
     private function buildIntelligentStrategy(DateTime $start, DateTime $end): array
     {
-        return ['operations' => $this->buildAdditiveCover($start, $end)];
-    }
-
-    /**
-     * Cover [start, end] with daily + Tuesday–Monday weekly buckets — no overlap, no gaps,
-     * every operation contributing only data inside the requested range:
-     *
-     *   [daily leading edge] + [one weekly op over the whole-week interior] + [daily trailing edge]
-     *
-     * The weekly WHERE clause (applyWhereConditions) matches on week_start_date/week_end_date
-     * overlap, so a weekly op aligned to [Tuesday, Monday] pulls exactly the interior weekly
-     * rows and never an adjacent week.
-     */
-    private function buildAdditiveCover(DateTime $start, DateTime $end): array
-    {
-        if ($start > $end) {
-            return [];
-        }
-
-        // First Tuesday on/after start (start of the first whole business week). Tue = 2 (ISO-N).
-        $firstTue = clone $start;
-        $addToTue = (2 - (int) $firstTue->format('N') + 7) % 7;
-        if ($addToTue > 0) {
-            $firstTue->modify("+{$addToTue} days");
-        }
-
-        // Last Monday on/before end (end of the last whole business week). Mon = 1 (ISO-N).
-        $lastMon = clone $end;
-        $subToMon = ((int) $lastMon->format('N') - 1 + 7) % 7;
-        if ($subToMon > 0) {
-            $lastMon->modify("-{$subToMon} days");
-        }
-
-        // No whole Tue–Mon week fits → read the daily rows directly.
-        if ($firstTue > $lastMon) {
-            return [[
-                'type' => '+',
-                'granularity' => 'daily',
-                'start' => clone $start,
-                'end' => clone $end,
-            ]];
-        }
-
-        $ops = [];
-
-        // Leading partial-week days: [start .. firstTue-1].
-        if ($firstTue > $start) {
-            $ops[] = [
-                'type' => '+',
-                'granularity' => 'daily',
-                'start' => clone $start,
-                'end' => (clone $firstTue)->modify('-1 day'),
-            ];
-        }
-
-        // Whole-week interior: [firstTue .. lastMon] as a single weekly op.
-        $ops[] = [
+        return ['operations' => [[
             'type' => '+',
-            'granularity' => 'weekly',
-            'start' => clone $firstTue,
-            'end' => clone $lastMon,
-        ];
-
-        // Trailing partial-week days: [lastMon+1 .. end].
-        if ($lastMon < $end) {
-            $ops[] = [
-                'type' => '+',
-                'granularity' => 'daily',
-                'start' => (clone $lastMon)->modify('+1 day'),
-                'end' => clone $end,
-            ];
-        }
-
-        return $ops;
+            'granularity' => 'daily',
+            'start' => $start,
+            'end' => $end,
+        ]]];
     }
 
     private function calculateDirectCost(DateTime $start, DateTime $end, string $granularity): int
