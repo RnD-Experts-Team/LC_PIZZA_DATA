@@ -783,9 +783,9 @@ class ReportsController extends Controller
             $this->scoreItemsTurnedOff($store, $weekStart, $day),
             $this->scoreOrdersVsSales(
                 $store,
-                $weekStart,
+                $weekStart->subWeeks(3),
                 $day,
-                $weekToDateSalesTotal,
+                $this->salesTotal($store, $weekStart->subWeeks(3), $day),
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['orders_vs_sales'])
             ),
         ];
@@ -1143,7 +1143,9 @@ class ReportsController extends Controller
             'actual_percent' => $actual,
             'goal_percent' => $goal,
             'blue_line_total' => round($blueLine, 2),
-            'week_to_date_sales' => round($weekToDateSalesTotal, 2),
+            'four_week_sales' => round($weekToDateSalesTotal, 2),
+            'period_start' => $start->toDateString(),
+            'period_end' => $end->toDateString(),
         ];
     }
 
