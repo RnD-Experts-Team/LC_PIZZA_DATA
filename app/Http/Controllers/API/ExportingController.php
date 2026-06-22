@@ -600,7 +600,7 @@ class ExportingController extends Controller
             'digital_sales',
             'digital_penetration',
 
-            'hnr_trnasactions',
+            'hnr_transactions',
             'hnr_broken_promises'
         ]);
 
