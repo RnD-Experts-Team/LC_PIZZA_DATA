@@ -26,21 +26,21 @@ class ExportingController extends Controller
         ini_set('memory_limit', '512M');
 
         $startDate = null;
-        $endDate   = null;
-        $store     = null;
+        $endDate = null;
+        $store = null;
 
         try {
             $validated = $request->validate([
                 'start' => 'nullable|date',
-                'end'   => 'nullable|date|after_or_equal:start',
+                'end' => 'nullable|date|after_or_equal:start',
                 'store' => 'nullable|string',
                 'model' => 'required|string|in:' . implode(',', array_merge($this->getAvailableModels(), ['all'])),
             ]);
 
             $startDate = !empty($validated['start']) ? Carbon::parse($validated['start']) : null;
-            $endDate   = !empty($validated['end'])   ? Carbon::parse($validated['end'])   : null;
-            $store     = $validated['store'] ?? null;
-            $model     = $validated['model'];
+            $endDate = !empty($validated['end']) ? Carbon::parse($validated['end']) : null;
+            $store = $validated['store'] ?? null;
+            $model = $validated['model'];
 
 
             if ($model === 'all') {
@@ -50,18 +50,18 @@ class ExportingController extends Controller
             return $this->exportSingleModelCsv($model, $startDate, $endDate, $store);
         } catch (\Throwable $e) {
             $this->logExportException($e, [
-                'type'  => 'csv',
+                'type' => 'csv',
                 'model' => $request->get('model'),
                 'start' => $startDate?->toDateString(),
-                'end'   => $endDate?->toDateString(),
+                'end' => $endDate?->toDateString(),
                 'store' => $store,
             ]);
 
             return response()->json([
                 'success' => false,
-                'error'   => $e->getMessage(),
-                'file'    => $e->getFile(),
-                'line'    => $e->getLine(),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
             ], 500);
         }
     }
@@ -77,31 +77,33 @@ class ExportingController extends Controller
 
         $validated = $request->validate([
             'start' => 'nullable|date',
-            'end'   => 'nullable|date|after_or_equal:start',
+            'end' => 'nullable|date|after_or_equal:start',
             'store' => 'nullable|string',
             'model' => 'required|string|in:' . implode(',', $this->getAvailableModels()),
             'limit' => 'nullable|integer|min:1|max:50000',
         ]);
 
         $startDate = !empty($validated['start']) ? Carbon::parse($validated['start']) : null;
-        $endDate   = !empty($validated['end'])   ? Carbon::parse($validated['end'])   : null;
-        $store     = $validated['store'] ?? null;
-        $model     = $validated['model'];
-        $limit     = $validated['limit'] ?? null;
+        $endDate = !empty($validated['end']) ? Carbon::parse($validated['end']) : null;
+        $store = $validated['store'] ?? null;
+        $model = $validated['model'];
+        $limit = $validated['limit'] ?? null;
 
 
         try {
             if ($this->isAggregationTable($model)) {
                 $q = $this->buildAggregationQuery($model, $startDate, $endDate);
-                if ($store) $q->where('franchise_store', $store);
-                if ($limit) $q->limit($limit);
+                if ($store)
+                    $q->where('franchise_store', $store);
+                if ($limit)
+                    $q->limit($limit);
 
                 $data = $q->get();
 
                 return response()->json([
-                    'success'      => true,
+                    'success' => true,
                     'record_count' => $data->count(),
-                    'data'         => $data,
+                    'data' => $data,
                 ]);
             }
 
@@ -109,11 +111,13 @@ class ExportingController extends Controller
 
             $all = collect();
             foreach ($queries as $q) {
-                if ($store) $q->where('franchise_store', $store);
+                if ($store)
+                    $q->where('franchise_store', $store);
 
                 if ($limit) {
                     $remaining = $limit - $all->count();
-                    if ($remaining <= 0) break;
+                    if ($remaining <= 0)
+                        break;
                     $q->limit($remaining);
                 }
 
@@ -121,25 +125,25 @@ class ExportingController extends Controller
             }
 
             return response()->json([
-                'success'      => true,
+                'success' => true,
                 'record_count' => $all->count(),
-                'data'         => $all->values(),
+                'data' => $all->values(),
             ]);
         } catch (\Throwable $e) {
             $this->logExportException($e, [
-                'type'  => 'json',
+                'type' => 'json',
                 'model' => $model,
                 'start' => $startDate?->toDateString(),
-                'end'   => $endDate?->toDateString(),
+                'end' => $endDate?->toDateString(),
                 'store' => $store,
                 'limit' => $limit,
             ]);
 
             return response()->json([
                 'success' => false,
-                'error'   => $e->getMessage(),
-                'file'    => $e->getFile(),
-                'line'    => $e->getLine(),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
             ], 500);
         }
     }
@@ -153,7 +157,7 @@ class ExportingController extends Controller
         ?Carbon $endDate,
         ?string $store
     ) {
-        $columns  = $this->getColumnsForModel($model);
+        $columns = $this->getColumnsForModel($model);
         $filename = $this->makeFilename($model, $startDate, $endDate, $store, 'csv');
 
         $tmpDir = storage_path('app/export_tmp');
@@ -175,7 +179,7 @@ class ExportingController extends Controller
         }
 
         return response()->download($tmpPath, $filename, [
-            'Content-Type'  => 'text/csv; charset=UTF-8',
+            'Content-Type' => 'text/csv; charset=UTF-8',
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
         ])->deleteFileAfterSend(true);
     }
@@ -189,7 +193,7 @@ class ExportingController extends Controller
             throw new \RuntimeException('ZipArchive extension is not installed.');
         }
 
-        $models      = $this->getAvailableModels();
+        $models = $this->getAvailableModels();
         $zipFilename = $this->makeFilename('all_models', $startDate, $endDate, $store, 'zip');
 
         $tmpDir = storage_path('app/export_tmp');
@@ -197,7 +201,7 @@ class ExportingController extends Controller
             @mkdir($tmpDir, 0775, true);
         }
 
-        $zipPath     = $tmpDir . '/export_' . uniqid('', true) . '.zip';
+        $zipPath = $tmpDir . '/export_' . uniqid('', true) . '.zip';
         $tmpCsvPaths = [];
 
         Log::info('EXPORT ALL MODELS ZIP', ['models' => count($models)]);
@@ -226,10 +230,10 @@ class ExportingController extends Controller
                     $this->writeCsvRowsForModel($fh, $model, $startDate, $endDate, $store, $columns);
                 } catch (\Throwable $e) {
                     $this->logExportException($e, [
-                        'type'  => 'zip-model',
+                        'type' => 'zip-model',
                         'model' => $model,
                         'start' => $startDate?->toDateString(),
-                        'end'   => $endDate?->toDateString(),
+                        'end' => $endDate?->toDateString(),
                         'store' => $store,
                     ]);
                 } finally {
@@ -242,12 +246,13 @@ class ExportingController extends Controller
             $zip->close();
         } finally {
             foreach ($tmpCsvPaths as $p) {
-                if (file_exists($p)) @unlink($p);
+                if (file_exists($p))
+                    @unlink($p);
             }
         }
 
         return response()->download($zipPath, $zipFilename, [
-            'Content-Type'  => 'application/zip',
+            'Content-Type' => 'application/zip',
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
         ])->deleteFileAfterSend(true);
     }
@@ -266,7 +271,8 @@ class ExportingController extends Controller
     ): void {
         if ($this->isAggregationTable($model)) {
             $q = $this->buildAggregationQuery($model, $startDate, $endDate);
-            if ($store) $q->where('franchise_store', $store);
+            if ($store)
+                $q->where('franchise_store', $store);
 
             $orderColumns = $this->getOrderColumnsForModel($model);
             foreach ($orderColumns as $col) {
@@ -294,7 +300,8 @@ class ExportingController extends Controller
 
         $totalRows = 0;
         foreach ($queries as $q) {
-            if ($store) $q->where('franchise_store', $store);
+            if ($store)
+                $q->where('franchise_store', $store);
 
             $tableName = $q->from;
 
@@ -351,7 +358,7 @@ class ExportingController extends Controller
             'daily_item_summary' => ['franchise_store', 'business_date'],
 
             'hourly_store_summary' => ['franchise_store', 'business_date', 'hour'],
-            'hourly_item_summary'  => ['franchise_store', 'business_date', 'hour', 'item_id'],
+            'hourly_item_summary' => ['franchise_store', 'business_date', 'hour', 'item_id'],
         ];
 
         return $orderMap[$model] ?? ['franchise_store', 'business_date'];
@@ -363,11 +370,11 @@ class ExportingController extends Controller
     protected function logExportException(\Throwable $e, array $context = []): void
     {
         $payload = [
-            'when'    => now()->toDateTimeString(),
+            'when' => now()->toDateTimeString(),
             'context' => $context,
-            'error'   => $e->getMessage(),
-            'file'    => $e->getFile(),
-            'line'    => $e->getLine(),
+            'error' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
         ];
 
         try {
@@ -416,7 +423,7 @@ class ExportingController extends Controller
 
         // Always compare on date strings to avoid time parts
         $start = $startDate->toDateString();
-        $end   = $endDate->toDateString();
+        $end = $endDate->toDateString();
 
         // Helper: overlap logic for period tables
         // period overlaps requested range iff period_start <= end AND period_end >= start
@@ -433,27 +440,27 @@ class ExportingController extends Controller
             case 'yearly_item_summary':
                 return $query->whereBetween('year_num', [$startDate->year, $endDate->year]);
 
-                // Weekly: use overlap, NOT whereBetween on starts/ends.
+            // Weekly: use overlap, NOT whereBetween on starts/ends.
             case 'weekly_store_summary':
             case 'weekly_item_summary':
                 return $applyOverlap($query, 'week_start_date', 'week_end_date');
 
-                // Quarterly: use overlap, NOT whereBetween on starts/ends.
+            // Quarterly: use overlap, NOT whereBetween on starts/ends.
             case 'quarterly_store_summary':
             case 'quarterly_item_summary':
                 return $applyOverlap($query, 'quarter_start_date', 'quarter_end_date');
 
-                // Monthly: your schema uses (year_num, month_num).
-                // Filter by a computed numeric key YYYYMM so ranges work across years.
+            // Monthly: your schema uses (year_num, month_num).
+            // Filter by a computed numeric key YYYYMM so ranges work across years.
             case 'monthly_store_summary':
             case 'monthly_item_summary':
                 $startKey = ($startDate->year * 100) + $startDate->month;
-                $endKey   = ($endDate->year   * 100) + $endDate->month;
+                $endKey = ($endDate->year * 100) + $endDate->month;
 
                 // This works even when spanning multiple years.
                 return $query->whereRaw('(year_num * 100 + month_num) BETWEEN ? AND ?', [$startKey, $endKey]);
 
-                // Daily / hourly: business_date is the grain, so simple between is correct.
+            // Daily / hourly: business_date is the grain, so simple between is correct.
             case 'daily_store_summary':
             case 'daily_item_summary':
             case 'hourly_store_summary':
@@ -592,6 +599,9 @@ class ExportingController extends Controller
             'digital_orders',
             'digital_sales',
             'digital_penetration',
+
+            'hnr_trnasactions',
+            'hnr_broken_promises'
         ]);
 
         $columnMap = [
@@ -957,7 +967,8 @@ class ExportingController extends Controller
         $parts = [$model];
         $parts[] = $startDate ? $startDate->format('Ymd') : 'all';
         $parts[] = $endDate ? $endDate->format('Ymd') : 'all';
-        if ($store) $parts[] = $store;
+        if ($store)
+            $parts[] = $store;
 
         return implode('_', $parts) . '.' . $extension;
     }
