@@ -37,6 +37,7 @@ Route::prefix('export')->group(function () {
 });
 
 Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware('auth.token.store');
+Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware('auth.token.store');
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware('auth.token.store');
 Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware('auth.token.store');
 Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware('auth.token.store');

@@ -1648,6 +1648,135 @@
                     "meta": { "$ref": "#/components/schemas/PaginationMeta" }
                 },
                 "required": ["data", "links", "meta"]
+            },
+
+            "MultiDashboardRequest": {
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Start date in YYYY-MM-DD format"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "End date in YYYY-MM-DD format"
+                    },
+                    "stores": {
+                        "oneOf": [
+                            { "type": "string", "enum": ["all"], "description": "Include all stores in the date range" },
+                            {
+                                "type": "array",
+                                "maxItems": 100,
+                                "items": { "type": "string" },
+                                "description": "Array of store numbers"
+                            }
+                        ]
+                    }
+                },
+                "required": ["start_date", "end_date", "stores"]
+            },
+
+            "MultiDashboardMeta": {
+                "type": "object",
+                "properties": {
+                    "start_date": { "type": "string", "format": "date" },
+                    "end_date": { "type": "string", "format": "date" },
+                    "total_days": { "type": "integer" },
+                    "stores": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "store_count": { "type": "integer" }
+                },
+                "required": ["start_date", "end_date", "total_days", "stores", "store_count"]
+            },
+
+            "MultiDashboardMetrics": {
+                "type": "object",
+                "additionalProperties": { "type": "number" },
+                "description": "All sales and operational metrics (80+ columns from DailyStoreSummary)"
+            },
+
+            "MultiDashboardSupplemental": {
+                "type": "object",
+                "properties": {
+                    "labor_total": { "type": "number" },
+                    "transfers_in_cost": { "type": "number" },
+                    "transfers_out_cost": { "type": "number" },
+                    "non_negotiable_count": { "type": "integer" },
+                    "go_to_calls": {
+                        "type": "array",
+                        "items": { "type": "object", "additionalProperties": true }
+                    }
+                }
+            },
+
+            "MultiDashboardAverages": {
+                "type": "object",
+                "properties": {
+                    "gross_sales_per_store_per_day": { "type": "number" },
+                    "royalty_obligation_per_store_per_day": { "type": "number" },
+                    "net_sales_per_store_per_day": { "type": "number" },
+                    "orders_per_store_per_day": { "type": "number" },
+                    "customer_count_per_store_per_day": { "type": "number" },
+                    "avg_order_value": { "type": "number" },
+                    "portal_usage_rate": { "type": "number" },
+                    "portal_on_time_rate": { "type": "number" },
+                    "digital_penetration": { "type": "number" },
+                    "delivery_rate": { "type": "number" }
+                }
+            },
+
+            "MultiDashboardStoreData": {
+                "type": "object",
+                "properties": {
+                    "totals": { "$ref": "#/components/schemas/MultiDashboardMetrics" },
+                    "averages": { "$ref": "#/components/schemas/MultiDashboardAverages" },
+                    "supplemental": { "$ref": "#/components/schemas/MultiDashboardSupplemental" },
+                    "by_date": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "Full DailyStoreSummary row for this store+date"
+                        }
+                    }
+                }
+            },
+
+            "MultiDashboardDateData": {
+                "type": "object",
+                "properties": {
+                    "totals": { "$ref": "#/components/schemas/MultiDashboardMetrics" },
+                    "by_store": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "Full DailyStoreSummary row for store on this date"
+                        }
+                    }
+                }
+            },
+
+            "MultiDashboardResponse": {
+                "type": "object",
+                "properties": {
+                    "meta": { "$ref": "#/components/schemas/MultiDashboardMeta" },
+                    "totals": { "$ref": "#/components/schemas/MultiDashboardMetrics" },
+                    "averages": { "$ref": "#/components/schemas/MultiDashboardAverages" },
+                    "by_store": {
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/components/schemas/MultiDashboardStoreData" }
+                    },
+                    "by_date": {
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/components/schemas/MultiDashboardDateData" }
+                    }
+                },
+                "required": ["meta", "totals", "averages", "by_store", "by_date"]
             }
         }
     },
@@ -1912,6 +2041,76 @@
                                 "schema": {
                                     "type": "object",
                                     "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+
+        "/reports/multi-dashboard": {
+            "post": {
+                "tags": ["Reports"],
+                "summary": "Multi-store date-range dashboard",
+                "description": "Comprehensive dashboard across multiple stores and date ranges. Returns detailed metrics broken down by store, by date, and cross-store totals with averages.",
+                "operationId": "multiStoreDashboard",
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MultiDashboardRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Multi-store dashboard data with full metrics breakdown",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MultiDashboardResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error (invalid dates, range > 366 days, too many stores, etc.)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": { "type": "string" },
+                                        "errors": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                                "type": "array",
+                                                "items": { "type": "string" }
+                                            }
+                                        }
+                                    },
+                                    "required": ["message", "errors"]
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": { "type": "string" }
+                                    }
                                 }
                             }
                         }
