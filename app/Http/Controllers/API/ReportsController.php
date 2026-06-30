@@ -75,11 +75,16 @@ class ReportsController extends Controller
     private const SCORE_GOAL_METRIC_IDS = [
         'sales' => 4,
         'normal_hours' => 9,
+        'normal_hours_floor' => 17,
+        'normal_hours_ceil' => 18,
         'overtime_hours' => 10,
         'portal' => 11,
         'hnr' => 12,
         'orders_vs_sales' => 15,
     ];
+
+    /** Dates on/after this use the floor/ceil normal-hours formula. */
+    private const NORMAL_HOURS_NEW_CUTOFF = '2026-06-30';
 
     /** entered_keys ids feeding the score. */
     private const SCORE_KEY_NORMAL_HOURS = 25;
@@ -1192,10 +1197,13 @@ class ReportsController extends Controller
     /**
      * Normal-hours (max 35) and overtime-hours (max 15) categories.
      *
-     * Weekly goals are prorated to "so far" by last week's sales
-     * distribution, then flex-adjusted by week-to-date sales vs goal
-     * ($1000 => 6 normal / 2 overtime hours). The deduction branches and
-     * the literal *2 / *3 multipliers mirror the source spreadsheet.
+     * For dates on/after NORMAL_HOURS_NEW_CUTOFF: uses a floor goal (id 17)
+     * and ceil goal (id 18). Both are prorated and flex-adjusted independently.
+     * Scoring: full 35 if actual is within [floor, ceil]; deduct proportionally
+     * otherwise (denominator is always the ceil/highest goal).
+     *
+     * For earlier dates: single normal-hours goal (id 9) with the original
+     * multi-case spreadsheet formula.
      */
     private function scoreHours(
         string $store,
@@ -1212,7 +1220,6 @@ class ReportsController extends Controller
         $otMax = self::SCORE_MAX['overtime_hours'];
 
         $salesGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['sales']);
-        $normalGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours']);
         $otGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['overtime_hours']);
 
         // Prorate fraction W: share of last week's sales falling on the elapsed days.
@@ -1229,52 +1236,114 @@ class ReportsController extends Controller
         $actNormal = $this->enteredKeyValueLatest($store, self::SCORE_KEY_NORMAL_HOURS, $weekStart, $day);
         $actOt = $this->enteredKeyValueLatest($store, self::SCORE_KEY_OVERTIME_HOURS, $weekStart, $day);
 
+        if ($day->toDateString() >= self::NORMAL_HOURS_NEW_CUTOFF) {
+            // --- New formula (floor/ceil) ---
+            $floorGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_floor']);
+            $ceilGoal  = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_ceil']);
+
+            $haveGoals = $salesGoal !== null && $floorGoal !== null && $ceilGoal !== null && $otGoal !== null;
+
+            if ($haveGoals) {
+                $origFloor = $floorGoal * $w;
+                $origCeil  = $ceilGoal * $w;
+                $proratedSalesGoal = $salesGoal * $w;
+                $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
+                $steps     = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+                $updFloor  = $origFloor + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $updCeil   = $origCeil  + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $origOt    = $otGoal * $w;
+                $updOt     = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+
+                [$normalScore, $normalCase] = $this->normalHoursScoreNew($updFloor, $updCeil, $actNormal);
+                $otScore = $this->overtimeHoursScore($updOt, $actOt, $updCeil);
+            } else {
+                $origFloor = $origCeil = $origOt = $proratedSalesGoal = 0.0;
+                $salesDiff = $steps = $updFloor = $updCeil = $updOt = 0.0;
+                $normalScore = $otScore = 0.0;
+                $normalCase = 0;
+            }
+
+            return [
+                'normal_hours' => [
+                    'key'                  => 'normal_hours',
+                    'label'                => 'Normal Hours',
+                    'score'                => round($normalScore, 2),
+                    'max'                  => $normalMax,
+                    'actual_hours'         => round($actNormal, 2),
+                    'weekly_goal_floor'    => $floorGoal,
+                    'weekly_goal_ceil'     => $ceilGoal,
+                    'prorate_fraction'     => round($w, 4),
+                    'floor_goal'           => round($updFloor, 2),
+                    'ceil_goal'            => round($updCeil, 2),
+                    'prorated_sales_goal'  => round($proratedSalesGoal, 2),
+                    'week_to_date_sales'   => round($weekToDateSalesTotal, 2),
+                    'sales_diff'           => round($salesDiff, 2),
+                    'days_elapsed'         => $weekToDateDayCount,
+                    'case'                 => $normalCase,
+                ],
+                'overtime_hours' => [
+                    'key'                    => 'overtime_hours',
+                    'label'                  => 'Overtime Hours',
+                    'score'                  => round($otScore, 2),
+                    'max'                    => $otMax,
+                    'actual_overtime_hours'  => round($actOt, 2),
+                    'weekly_goal'            => $otGoal,
+                    'original_goal'          => round($origOt, 2),
+                    'updated_goal'           => round($updOt, 2),
+                    'normal_goal_denominator' => round($updCeil, 2),
+                ],
+            ];
+        }
+
+        // --- Old formula (single normal-hours goal id 9) ---
+        $normalGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours']);
+
         $haveGoals = $salesGoal !== null && $normalGoal !== null && $otGoal !== null;
 
         if ($haveGoals) {
             $origNormal = $normalGoal * $w;
-            $origOt = $otGoal * $w;
+            $origOt     = $otGoal * $w;
             $proratedSalesGoal = $salesGoal * $w;
-            $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
-            $steps = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
-            $updNormal = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
-            $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+            $salesDiff  = $weekToDateSalesTotal - $proratedSalesGoal;
+            $steps      = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+            $updNormal  = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+            $updOt      = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
             [$normalScore, $normalCase] = $this->normalHoursScore($origNormal, $updNormal, $actNormal);
             $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal);
         } else {
             $origNormal = $origOt = $proratedSalesGoal = 0.0;
-            $salesDiff = $steps = $updNormal = $updOt = 0.0;
+            $salesDiff  = $steps = $updNormal = $updOt = 0.0;
             $normalScore = $otScore = 0.0;
             $normalCase = 0;
         }
 
         return [
             'normal_hours' => [
-                'key' => 'normal_hours',
-                'label' => 'Normal Hours',
-                'score' => round($normalScore, 2),
-                'max' => $normalMax,
-                'actual_hours' => round($actNormal, 2),
-                'weekly_goal' => $normalGoal,
-                'prorate_fraction' => round($w, 4),
-                'original_goal' => round($origNormal, 2),
-                'updated_goal' => round($updNormal, 2),
+                'key'                 => 'normal_hours',
+                'label'               => 'Normal Hours',
+                'score'               => round($normalScore, 2),
+                'max'                 => $normalMax,
+                'actual_hours'        => round($actNormal, 2),
+                'weekly_goal'         => $normalGoal,
+                'prorate_fraction'    => round($w, 4),
+                'original_goal'       => round($origNormal, 2),
+                'updated_goal'        => round($updNormal, 2),
                 'prorated_sales_goal' => round($proratedSalesGoal, 2),
-                'week_to_date_sales' => round($weekToDateSalesTotal, 2),
-                'sales_diff' => round($salesDiff, 2),
-                'days_elapsed' => $weekToDateDayCount,
-                'case' => $normalCase,
+                'week_to_date_sales'  => round($weekToDateSalesTotal, 2),
+                'sales_diff'          => round($salesDiff, 2),
+                'days_elapsed'        => $weekToDateDayCount,
+                'case'                => $normalCase,
             ],
             'overtime_hours' => [
-                'key' => 'overtime_hours',
-                'label' => 'Overtime Hours',
-                'score' => round($otScore, 2),
-                'max' => $otMax,
-                'actual_overtime_hours' => round($actOt, 2),
-                'weekly_goal' => $otGoal,
-                'original_goal' => round($origOt, 2),
-                'updated_goal' => round($updOt, 2),
+                'key'                    => 'overtime_hours',
+                'label'                  => 'Overtime Hours',
+                'score'                  => round($otScore, 2),
+                'max'                    => $otMax,
+                'actual_overtime_hours'  => round($actOt, 2),
+                'weekly_goal'            => $otGoal,
+                'original_goal'          => round($origOt, 2),
+                'updated_goal'           => round($updOt, 2),
                 'normal_goal_denominator' => round($updNormal, 2),
             ],
         ];
@@ -1313,6 +1382,33 @@ class ReportsController extends Controller
 
         // Formula yields a fraction of 1.0; the 0.35 cap maps to 35 points.
         return [max(0.0, 0.35 - $deduction) * 100, $case];
+    }
+
+    /**
+     * Normal-hours score (out of 35) — new formula (dates >= NORMAL_HOURS_NEW_CUTOFF).
+     * Full 35 when actual is within [floor, ceil].
+     * Above ceil: deduct ((actual - ceil) / ceil) * 5.
+     * Below floor: deduct ((floor - actual) / ceil) * 5.
+     * Returns [score, case] where case 1=over, 2=under, 3=within.
+     */
+    private function normalHoursScoreNew(float $floor, float $ceil, float $actual): array
+    {
+        if ($ceil <= 0) {
+            return [0.0, 0];
+        }
+
+        if ($actual > $ceil) {
+            $deduction = (($actual - $ceil) / $ceil) * 5;
+            $case = 1;
+        } elseif ($actual < $floor) {
+            $deduction = (($floor - $actual) / $ceil) * 5;
+            $case = 2;
+        } else {
+            $deduction = 0.0;
+            $case = 3;
+        }
+
+        return [max(0.0, 35.0 - $deduction), $case];
     }
 
     /**
