@@ -75,11 +75,16 @@ class ReportsController extends Controller
     private const SCORE_GOAL_METRIC_IDS = [
         'sales' => 4,
         'normal_hours' => 9,
+        'normal_hours_floor' => 17,
+        'normal_hours_ceil' => 18,
         'overtime_hours' => 10,
         'portal' => 11,
         'hnr' => 12,
         'orders_vs_sales' => 15,
     ];
+
+    /** Dates on/after this use the floor/ceil normal-hours formula. */
+    private const NORMAL_HOURS_NEW_CUTOFF = '2026-06-30';
 
     /** entered_keys ids feeding the score. */
     private const SCORE_KEY_NORMAL_HOURS = 25;
@@ -408,6 +413,387 @@ class ReportsController extends Controller
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
         ]);
+    }
+
+    public function multiStoreDashboard(): JsonResponse
+    {
+        $input = request()->all();
+
+        if (empty($input['start_date']) || empty($input['end_date']) || empty($input['stores'])) {
+            throw ValidationException::withMessages([
+                'start_date' => 'start_date is required',
+                'end_date' => 'end_date is required',
+                'stores' => 'stores is required',
+            ]);
+        }
+
+        $startStr = $input['start_date'];
+        $endStr = $input['end_date'];
+        $storesInput = $input['stores'];
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startStr) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endStr)) {
+            throw ValidationException::withMessages([
+                'date_format' => 'start_date and end_date must be in Y-m-d format'
+            ]);
+        }
+
+        $startDate = CarbonImmutable::parse($startStr)->startOfDay();
+        $endDate = CarbonImmutable::parse($endStr)->endOfDay();
+
+        if ($endDate->isBefore($startDate)) {
+            throw ValidationException::withMessages([
+                'end_date' => 'end_date must be after or equal to start_date'
+            ]);
+        }
+
+        $dayCount = (int) $startDate->diffInDays($endDate) + 1;
+        if ($dayCount > 366) {
+            throw ValidationException::withMessages([
+                'date_range' => 'Date range must not exceed 366 days.'
+            ]);
+        }
+
+        if ($storesInput === 'all' || $storesInput === ['all']) {
+            $storesInput = 'all';
+        } elseif (is_array($storesInput)) {
+            if (count($storesInput) > 100) {
+                throw ValidationException::withMessages([
+                    'stores' => 'Cannot request more than 100 stores'
+                ]);
+            }
+        } else {
+            throw ValidationException::withMessages([
+                'stores' => 'stores must be either "all" or an array of store numbers'
+            ]);
+        }
+
+        $cacheKey = 'multi_dashboard_' . md5(
+            (is_array($storesInput) ? implode(',', $storesInput) : 'all') .
+            $startDate->toDateString() .
+            $endDate->toDateString()
+        );
+        $ttl = $endDate->isPast() ? 86400 : 300;
+
+        $result = Cache::remember($cacheKey, $ttl, fn() =>
+            $this->buildMultiDashboard($storesInput, $startDate, $endDate)
+        );
+
+        return response()->json($result);
+    }
+
+    // ---------------------------------------------------------------------
+    // Multi-store dashboard builder (cached)
+    // ---------------------------------------------------------------------
+
+    private function buildMultiDashboard(mixed $storesInput, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $stores = $this->resolveStores($storesInput, $start, $end);
+
+        if (empty($stores)) {
+            return [
+                'meta' => [
+                    'start_date' => $start->toDateString(),
+                    'end_date' => $end->toDateString(),
+                    'total_days' => (int) $start->diffInDays($end) + 1,
+                    'stores' => [],
+                    'store_count' => 0,
+                ],
+                'totals' => [],
+                'averages' => [],
+                'by_store' => [],
+                'by_date' => [],
+            ];
+        }
+
+        $rows = DailyStoreSummary::whereIn('franchise_store', $stores)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+            ->orderBy('business_date')
+            ->orderBy('franchise_store')
+            ->get();
+
+        $transfers = TransferInOut::whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->where(function ($q) use ($stores) {
+                $q->whereIn('from_store_number', $stores)
+                  ->orWhereIn('to_store_number', $stores);
+            })
+            ->get();
+
+        $nonNegotiables = NonNegotiableReport::whereIn('store_number', $stores)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->get();
+
+        $goToCalls = GoToCall::whereIn('store_number', $stores)
+            ->whereBetween('datetime', [$start, $end])
+            ->with('participants')
+            ->get();
+
+        $laborEntries = EnteredKeyValue::whereIn('store_id', $stores)
+            ->where('key_id', self::LABOR_ENTERED_KEY_ID)
+            ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->get();
+
+        $grandTotals = $this->initializeMetricsBag();
+        $byStore = [];
+        $byDate = [];
+        $dayCount = (int) $start->diffInDays($end) + 1;
+
+        foreach ($rows as $row) {
+            $store = $row->franchise_store;
+            $date = $row->business_date->toDateString();
+
+            if (!isset($byStore[$store])) {
+                $byStore[$store] = [
+                    'totals' => $this->initializeMetricsBag(),
+                    'supplemental' => ['labor_total' => 0, 'transfers_in_cost' => 0, 'transfers_out_cost' => 0, 'non_negotiable_count' => 0, 'go_to_calls' => []],
+                    'by_date' => [],
+                ];
+            }
+
+            if (!isset($byDate[$date])) {
+                $byDate[$date] = [
+                    'totals' => $this->initializeMetricsBag(),
+                    'by_store' => [],
+                ];
+            }
+
+            $rowArray = $row->toArray();
+            $byStore[$store]['by_date'][$date] = $rowArray;
+            $byDate[$date]['by_store'][$store] = $rowArray;
+
+            $this->aggregateMetrics($grandTotals, $row);
+            $this->aggregateMetrics($byStore[$store]['totals'], $row);
+            $this->aggregateMetrics($byDate[$date]['totals'], $row);
+        }
+
+        foreach ($transfers as $transfer) {
+            $toStore = $transfer->to_store_number;
+            $fromStore = $transfer->from_store_number;
+            $cost = (float) ($transfer->total_cost ?? 0);
+
+            if (isset($byStore[$toStore])) {
+                $byStore[$toStore]['supplemental']['transfers_in_cost'] += $cost;
+            }
+            if (isset($byStore[$fromStore])) {
+                $byStore[$fromStore]['supplemental']['transfers_out_cost'] += $cost;
+            }
+            $grandTotals['transfers_in_cost'] += $cost;
+        }
+
+        foreach ($nonNegotiables as $nn) {
+            $store = $nn->store_number;
+            if (isset($byStore[$store])) {
+                $byStore[$store]['supplemental']['non_negotiable_count']++;
+            }
+            $grandTotals['non_negotiable_count']++;
+        }
+
+        foreach ($goToCalls as $call) {
+            $store = $call->store_number;
+            if (isset($byStore[$store])) {
+                $byStore[$store]['supplemental']['go_to_calls'][] = $call->toArray();
+            }
+            $grandTotals['go_to_calls_count']++;
+        }
+
+        foreach ($laborEntries as $entry) {
+            $store = $entry->store_id;
+            $amount = (float) ($entry->value_number ?? $entry->value_text ?? 0);
+            if (isset($byStore[$store])) {
+                $byStore[$store]['supplemental']['labor_total'] += $amount;
+            }
+            $grandTotals['labor_total'] += $amount;
+        }
+
+        $grandAverages = $this->computeAverages($grandTotals, count($stores), $dayCount);
+        $storeAverages = [];
+        foreach ($byStore as $store => $data) {
+            $storeAverages[$store] = $this->computeAverages($data['totals'], 1, $dayCount);
+        }
+
+        foreach ($byStore as $store => &$data) {
+            $data['averages'] = $storeAverages[$store];
+            unset($data);
+        }
+
+        foreach ($byDate as &$dayData) {
+            $dayData['totals'] = $this->deriveRatios($dayData['totals']);
+            unset($dayData);
+        }
+
+        return [
+            'meta' => [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+                'total_days' => $dayCount,
+                'stores' => $stores,
+                'store_count' => count($stores),
+            ],
+            'totals' => $this->deriveRatios($grandTotals),
+            'averages' => $grandAverages,
+            'by_store' => $byStore,
+            'by_date' => $byDate,
+        ];
+    }
+
+    private function resolveStores(mixed $input, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        if ($input === 'all') {
+            return DailyStoreSummary::whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                ->distinct()
+                ->pluck('franchise_store')
+                ->all();
+        }
+
+        if (is_array($input)) {
+            $stores = array_filter(array_map('trim', $input), 'strlen');
+            if (count($stores) > 100) {
+                $stores = array_slice($stores, 0, 100);
+            }
+            return array_values($stores);
+        }
+
+        return [];
+    }
+
+    private function initializeMetricsBag(): array
+    {
+        return [
+            'gross_sales' => 0,
+            'royalty_obligation' => 0,
+            'net_sales' => 0,
+            'refund_amount' => 0,
+            'total_orders' => 0,
+            'completed_orders' => 0,
+            'cancelled_orders' => 0,
+            'modified_orders' => 0,
+            'refunded_orders' => 0,
+            'customer_count' => 0,
+            'phone_orders' => 0,
+            'phone_sales' => 0,
+            'website_orders' => 0,
+            'website_sales' => 0,
+            'mobile_orders' => 0,
+            'mobile_sales' => 0,
+            'call_center_orders' => 0,
+            'call_center_sales' => 0,
+            'drive_thru_orders' => 0,
+            'drive_thru_sales' => 0,
+            'doordash_orders' => 0,
+            'doordash_sales' => 0,
+            'ubereats_orders' => 0,
+            'ubereats_sales' => 0,
+            'grubhub_orders' => 0,
+            'grubhub_sales' => 0,
+            'delivery_orders' => 0,
+            'delivery_sales' => 0,
+            'carryout_orders' => 0,
+            'carryout_sales' => 0,
+            'pizza_delivery_quantity' => 0,
+            'pizza_delivery_sales' => 0,
+            'pizza_carryout_quantity' => 0,
+            'pizza_carryout_sales' => 0,
+            'hnr_delivery_quantity' => 0,
+            'hnr_delivery_sales' => 0,
+            'hnr_carryout_quantity' => 0,
+            'hnr_carryout_sales' => 0,
+            'bread_delivery_quantity' => 0,
+            'bread_delivery_sales' => 0,
+            'bread_carryout_quantity' => 0,
+            'bread_carryout_sales' => 0,
+            'wings_delivery_quantity' => 0,
+            'wings_delivery_sales' => 0,
+            'wings_carryout_quantity' => 0,
+            'wings_carryout_sales' => 0,
+            'beverages_delivery_quantity' => 0,
+            'beverages_delivery_sales' => 0,
+            'beverages_carryout_quantity' => 0,
+            'beverages_carryout_sales' => 0,
+            'other_foods_delivery_quantity' => 0,
+            'other_foods_delivery_sales' => 0,
+            'other_foods_carryout_quantity' => 0,
+            'other_foods_carryout_sales' => 0,
+            'side_items_delivery_quantity' => 0,
+            'side_items_delivery_sales' => 0,
+            'side_items_carryout_quantity' => 0,
+            'side_items_carryout_sales' => 0,
+            'sales_tax' => 0,
+            'delivery_fees' => 0,
+            'delivery_tips' => 0,
+            'store_tips' => 0,
+            'total_tips' => 0,
+            'cash_sales' => 0,
+            'over_short' => 0,
+            'portal_eligible_orders' => 0,
+            'portal_used_orders' => 0,
+            'portal_on_time_orders' => 0,
+            'digital_orders' => 0,
+            'digital_sales' => 0,
+            'hnr_transactions' => 0,
+            'hnr_broken_promises' => 0,
+            'labor_total' => 0,
+            'transfers_in_cost' => 0,
+            'transfers_out_cost' => 0,
+            'non_negotiable_count' => 0,
+            'go_to_calls_count' => 0,
+        ];
+    }
+
+    private function aggregateMetrics(array &$accumulator, DailyStoreSummary $row): void
+    {
+        $numeric_fields = [
+            'gross_sales', 'royalty_obligation', 'net_sales', 'refund_amount',
+            'total_orders', 'completed_orders', 'cancelled_orders', 'modified_orders', 'refunded_orders',
+            'customer_count',
+            'phone_orders', 'phone_sales', 'website_orders', 'website_sales', 'mobile_orders', 'mobile_sales',
+            'call_center_orders', 'call_center_sales', 'drive_thru_orders', 'drive_thru_sales',
+            'doordash_orders', 'doordash_sales', 'ubereats_orders', 'ubereats_sales', 'grubhub_orders', 'grubhub_sales',
+            'delivery_orders', 'delivery_sales', 'carryout_orders', 'carryout_sales',
+            'pizza_delivery_quantity', 'pizza_delivery_sales', 'pizza_carryout_quantity', 'pizza_carryout_sales',
+            'hnr_delivery_quantity', 'hnr_delivery_sales', 'hnr_carryout_quantity', 'hnr_carryout_sales',
+            'bread_delivery_quantity', 'bread_delivery_sales', 'bread_carryout_quantity', 'bread_carryout_sales',
+            'wings_delivery_quantity', 'wings_delivery_sales', 'wings_carryout_quantity', 'wings_carryout_sales',
+            'beverages_delivery_quantity', 'beverages_delivery_sales', 'beverages_carryout_quantity', 'beverages_carryout_sales',
+            'other_foods_delivery_quantity', 'other_foods_delivery_sales', 'other_foods_carryout_quantity', 'other_foods_carryout_sales',
+            'side_items_delivery_quantity', 'side_items_delivery_sales', 'side_items_carryout_quantity', 'side_items_carryout_sales',
+            'sales_tax', 'delivery_fees', 'delivery_tips', 'store_tips', 'total_tips', 'cash_sales', 'over_short',
+            'portal_eligible_orders', 'portal_used_orders', 'portal_on_time_orders',
+            'digital_orders', 'digital_sales',
+            'hnr_transactions', 'hnr_broken_promises',
+        ];
+
+        foreach ($numeric_fields as $field) {
+            $value = (float) ($row->{$field} ?? 0);
+            $accumulator[$field] += $value;
+        }
+    }
+
+    private function computeAverages(array $totals, int $storeCount, int $dayCount): array
+    {
+        $totalDays = max(1, $storeCount * $dayCount);
+
+        return [
+            'gross_sales_per_store_per_day' => $totals['gross_sales'] / $totalDays,
+            'royalty_obligation_per_store_per_day' => $totals['royalty_obligation'] / $totalDays,
+            'net_sales_per_store_per_day' => $totals['net_sales'] / $totalDays,
+            'orders_per_store_per_day' => $totals['total_orders'] / $totalDays,
+            'customer_count_per_store_per_day' => $totals['customer_count'] / $totalDays,
+            'avg_order_value' => $totals['total_orders'] > 0 ? $totals['royalty_obligation'] / $totals['total_orders'] : 0,
+            'portal_usage_rate' => $totals['portal_eligible_orders'] > 0 ? ($totals['portal_used_orders'] / $totals['portal_eligible_orders']) * 100 : 0,
+            'portal_on_time_rate' => $totals['portal_used_orders'] > 0 ? ($totals['portal_on_time_orders'] / $totals['portal_used_orders']) * 100 : 0,
+            'digital_penetration' => $totals['gross_sales'] > 0 ? ($totals['digital_sales'] / $totals['gross_sales']) * 100 : 0,
+            'delivery_rate' => $totals['total_orders'] > 0 ? ($totals['delivery_orders'] / $totals['total_orders']) * 100 : 0,
+        ];
+    }
+
+    private function deriveRatios(array $totals): array
+    {
+        $totals['avg_order_value'] = $totals['total_orders'] > 0 ? $totals['royalty_obligation'] / $totals['total_orders'] : 0;
+        $totals['portal_usage_rate'] = $totals['portal_eligible_orders'] > 0 ? ($totals['portal_used_orders'] / $totals['portal_eligible_orders']) * 100 : 0;
+        $totals['portal_on_time_rate'] = $totals['portal_used_orders'] > 0 ? ($totals['portal_on_time_orders'] / $totals['portal_used_orders']) * 100 : 0;
+        $totals['digital_penetration'] = $totals['gross_sales'] > 0 ? ($totals['digital_sales'] / $totals['gross_sales']) * 100 : 0;
+        $totals['delivery_rate'] = $totals['total_orders'] > 0 ? ($totals['delivery_orders'] / $totals['total_orders']) * 100 : 0;
+
+        return $totals;
     }
 
     // ---------------------------------------------------------------------
@@ -811,10 +1197,13 @@ class ReportsController extends Controller
     /**
      * Normal-hours (max 35) and overtime-hours (max 15) categories.
      *
-     * Weekly goals are prorated to "so far" by last week's sales
-     * distribution, then flex-adjusted by week-to-date sales vs goal
-     * ($1000 => 6 normal / 2 overtime hours). The deduction branches and
-     * the literal *2 / *3 multipliers mirror the source spreadsheet.
+     * For dates on/after NORMAL_HOURS_NEW_CUTOFF: uses a floor goal (id 17)
+     * and ceil goal (id 18). Both are prorated and flex-adjusted independently.
+     * Scoring: full 35 if actual is within [floor, ceil]; deduct proportionally
+     * otherwise (denominator is always the ceil/highest goal).
+     *
+     * For earlier dates: single normal-hours goal (id 9) with the original
+     * multi-case spreadsheet formula.
      */
     private function scoreHours(
         string $store,
@@ -831,7 +1220,6 @@ class ReportsController extends Controller
         $otMax = self::SCORE_MAX['overtime_hours'];
 
         $salesGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['sales']);
-        $normalGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours']);
         $otGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['overtime_hours']);
 
         // Prorate fraction W: share of last week's sales falling on the elapsed days.
@@ -848,52 +1236,114 @@ class ReportsController extends Controller
         $actNormal = $this->enteredKeyValueLatest($store, self::SCORE_KEY_NORMAL_HOURS, $weekStart, $day);
         $actOt = $this->enteredKeyValueLatest($store, self::SCORE_KEY_OVERTIME_HOURS, $weekStart, $day);
 
+        if ($day->toDateString() >= self::NORMAL_HOURS_NEW_CUTOFF) {
+            // --- New formula (floor/ceil) ---
+            $floorGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_floor']);
+            $ceilGoal  = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_ceil']);
+
+            $haveGoals = $salesGoal !== null && $floorGoal !== null && $ceilGoal !== null && $otGoal !== null;
+
+            if ($haveGoals) {
+                $origFloor = $floorGoal * $w;
+                $origCeil  = $ceilGoal * $w;
+                $proratedSalesGoal = $salesGoal * $w;
+                $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
+                $steps     = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+                $updFloor  = $origFloor + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $updCeil   = $origCeil  + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $origOt    = $otGoal * $w;
+                $updOt     = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+
+                [$normalScore, $normalCase] = $this->normalHoursScoreNew($updFloor, $updCeil, $actNormal);
+                $otScore = $this->overtimeHoursScore($updOt, $actOt, $updCeil);
+            } else {
+                $origFloor = $origCeil = $origOt = $proratedSalesGoal = 0.0;
+                $salesDiff = $steps = $updFloor = $updCeil = $updOt = 0.0;
+                $normalScore = $otScore = 0.0;
+                $normalCase = 0;
+            }
+
+            return [
+                'normal_hours' => [
+                    'key'                  => 'normal_hours',
+                    'label'                => 'Normal Hours',
+                    'score'                => round($normalScore, 2),
+                    'max'                  => $normalMax,
+                    'actual_hours'         => round($actNormal, 2),
+                    'weekly_goal_floor'    => $floorGoal,
+                    'weekly_goal_ceil'     => $ceilGoal,
+                    'prorate_fraction'     => round($w, 4),
+                    'floor_goal'           => round($updFloor, 2),
+                    'ceil_goal'            => round($updCeil, 2),
+                    'prorated_sales_goal'  => round($proratedSalesGoal, 2),
+                    'week_to_date_sales'   => round($weekToDateSalesTotal, 2),
+                    'sales_diff'           => round($salesDiff, 2),
+                    'days_elapsed'         => $weekToDateDayCount,
+                    'case'                 => $normalCase,
+                ],
+                'overtime_hours' => [
+                    'key'                    => 'overtime_hours',
+                    'label'                  => 'Overtime Hours',
+                    'score'                  => round($otScore, 2),
+                    'max'                    => $otMax,
+                    'actual_overtime_hours'  => round($actOt, 2),
+                    'weekly_goal'            => $otGoal,
+                    'original_goal'          => round($origOt, 2),
+                    'updated_goal'           => round($updOt, 2),
+                    'normal_goal_denominator' => round($updCeil, 2),
+                ],
+            ];
+        }
+
+        // --- Old formula (single normal-hours goal id 9) ---
+        $normalGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours']);
+
         $haveGoals = $salesGoal !== null && $normalGoal !== null && $otGoal !== null;
 
         if ($haveGoals) {
             $origNormal = $normalGoal * $w;
-            $origOt = $otGoal * $w;
+            $origOt     = $otGoal * $w;
             $proratedSalesGoal = $salesGoal * $w;
-            $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
-            $steps = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
-            $updNormal = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
-            $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+            $salesDiff  = $weekToDateSalesTotal - $proratedSalesGoal;
+            $steps      = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+            $updNormal  = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+            $updOt      = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
             [$normalScore, $normalCase] = $this->normalHoursScore($origNormal, $updNormal, $actNormal);
             $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal);
         } else {
             $origNormal = $origOt = $proratedSalesGoal = 0.0;
-            $salesDiff = $steps = $updNormal = $updOt = 0.0;
+            $salesDiff  = $steps = $updNormal = $updOt = 0.0;
             $normalScore = $otScore = 0.0;
             $normalCase = 0;
         }
 
         return [
             'normal_hours' => [
-                'key' => 'normal_hours',
-                'label' => 'Normal Hours',
-                'score' => round($normalScore, 2),
-                'max' => $normalMax,
-                'actual_hours' => round($actNormal, 2),
-                'weekly_goal' => $normalGoal,
-                'prorate_fraction' => round($w, 4),
-                'original_goal' => round($origNormal, 2),
-                'updated_goal' => round($updNormal, 2),
+                'key'                 => 'normal_hours',
+                'label'               => 'Normal Hours',
+                'score'               => round($normalScore, 2),
+                'max'                 => $normalMax,
+                'actual_hours'        => round($actNormal, 2),
+                'weekly_goal'         => $normalGoal,
+                'prorate_fraction'    => round($w, 4),
+                'original_goal'       => round($origNormal, 2),
+                'updated_goal'        => round($updNormal, 2),
                 'prorated_sales_goal' => round($proratedSalesGoal, 2),
-                'week_to_date_sales' => round($weekToDateSalesTotal, 2),
-                'sales_diff' => round($salesDiff, 2),
-                'days_elapsed' => $weekToDateDayCount,
-                'case' => $normalCase,
+                'week_to_date_sales'  => round($weekToDateSalesTotal, 2),
+                'sales_diff'          => round($salesDiff, 2),
+                'days_elapsed'        => $weekToDateDayCount,
+                'case'                => $normalCase,
             ],
             'overtime_hours' => [
-                'key' => 'overtime_hours',
-                'label' => 'Overtime Hours',
-                'score' => round($otScore, 2),
-                'max' => $otMax,
-                'actual_overtime_hours' => round($actOt, 2),
-                'weekly_goal' => $otGoal,
-                'original_goal' => round($origOt, 2),
-                'updated_goal' => round($updOt, 2),
+                'key'                    => 'overtime_hours',
+                'label'                  => 'Overtime Hours',
+                'score'                  => round($otScore, 2),
+                'max'                    => $otMax,
+                'actual_overtime_hours'  => round($actOt, 2),
+                'weekly_goal'            => $otGoal,
+                'original_goal'          => round($origOt, 2),
+                'updated_goal'           => round($updOt, 2),
                 'normal_goal_denominator' => round($updNormal, 2),
             ],
         ];
@@ -932,6 +1382,33 @@ class ReportsController extends Controller
 
         // Formula yields a fraction of 1.0; the 0.35 cap maps to 35 points.
         return [max(0.0, 0.35 - $deduction) * 100, $case];
+    }
+
+    /**
+     * Normal-hours score (out of 35) — new formula (dates >= NORMAL_HOURS_NEW_CUTOFF).
+     * Full 35 when actual is within [floor, ceil].
+     * Above ceil: deduct ((actual - ceil) / ceil) * 5.
+     * Below floor: deduct ((floor - actual) / ceil) * 5.
+     * Returns [score, case] where case 1=over, 2=under, 3=within.
+     */
+    private function normalHoursScoreNew(float $floor, float $ceil, float $actual): array
+    {
+        if ($ceil <= 0) {
+            return [0.0, 0];
+        }
+
+        if ($actual > $ceil) {
+            $deduction = (($actual - $ceil) / $ceil) * 5;
+            $case = 1;
+        } elseif ($actual < $floor) {
+            $deduction = (($floor - $actual) / $ceil) * 5;
+            $case = 2;
+        } else {
+            $deduction = 0.0;
+            $case = 3;
+        }
+
+        return [max(0.0, 35.0 - $deduction), $case];
     }
 
     /**
