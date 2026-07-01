@@ -45,7 +45,7 @@ class ReportsController extends Controller
     ];
     private const LTO_ITEM_IDS = [
         // Add LTO item IDs here, e.g. '201234', '205678'
-        '204380'
+        '406152'
     ];
 
     private const LABOR_ENTERED_KEY_ID = 23;
@@ -474,7 +474,10 @@ class ReportsController extends Controller
         );
         $ttl = $endDate->isPast() ? 86400 : 300;
 
-        $result = Cache::remember($cacheKey, $ttl, fn() =>
+        $result = Cache::remember(
+            $cacheKey,
+            $ttl,
+            fn() =>
             $this->buildMultiDashboard($storesInput, $startDate, $endDate)
         );
 
@@ -514,7 +517,7 @@ class ReportsController extends Controller
         $transfers = TransferInOut::whereBetween('date', [$start->toDateString(), $end->toDateString()])
             ->where(function ($q) use ($stores) {
                 $q->whereIn('from_store_number', $stores)
-                  ->orWhereIn('to_store_number', $stores);
+                    ->orWhereIn('to_store_number', $stores);
             })
             ->get();
 
@@ -741,24 +744,78 @@ class ReportsController extends Controller
     private function aggregateMetrics(array &$accumulator, DailyStoreSummary $row): void
     {
         $numeric_fields = [
-            'gross_sales', 'royalty_obligation', 'net_sales', 'refund_amount',
-            'total_orders', 'completed_orders', 'cancelled_orders', 'modified_orders', 'refunded_orders',
+            'gross_sales',
+            'royalty_obligation',
+            'net_sales',
+            'refund_amount',
+            'total_orders',
+            'completed_orders',
+            'cancelled_orders',
+            'modified_orders',
+            'refunded_orders',
             'customer_count',
-            'phone_orders', 'phone_sales', 'website_orders', 'website_sales', 'mobile_orders', 'mobile_sales',
-            'call_center_orders', 'call_center_sales', 'drive_thru_orders', 'drive_thru_sales',
-            'doordash_orders', 'doordash_sales', 'ubereats_orders', 'ubereats_sales', 'grubhub_orders', 'grubhub_sales',
-            'delivery_orders', 'delivery_sales', 'carryout_orders', 'carryout_sales',
-            'pizza_delivery_quantity', 'pizza_delivery_sales', 'pizza_carryout_quantity', 'pizza_carryout_sales',
-            'hnr_delivery_quantity', 'hnr_delivery_sales', 'hnr_carryout_quantity', 'hnr_carryout_sales',
-            'bread_delivery_quantity', 'bread_delivery_sales', 'bread_carryout_quantity', 'bread_carryout_sales',
-            'wings_delivery_quantity', 'wings_delivery_sales', 'wings_carryout_quantity', 'wings_carryout_sales',
-            'beverages_delivery_quantity', 'beverages_delivery_sales', 'beverages_carryout_quantity', 'beverages_carryout_sales',
-            'other_foods_delivery_quantity', 'other_foods_delivery_sales', 'other_foods_carryout_quantity', 'other_foods_carryout_sales',
-            'side_items_delivery_quantity', 'side_items_delivery_sales', 'side_items_carryout_quantity', 'side_items_carryout_sales',
-            'sales_tax', 'delivery_fees', 'delivery_tips', 'store_tips', 'total_tips', 'cash_sales', 'over_short',
-            'portal_eligible_orders', 'portal_used_orders', 'portal_on_time_orders',
-            'digital_orders', 'digital_sales',
-            'hnr_transactions', 'hnr_broken_promises',
+            'phone_orders',
+            'phone_sales',
+            'website_orders',
+            'website_sales',
+            'mobile_orders',
+            'mobile_sales',
+            'call_center_orders',
+            'call_center_sales',
+            'drive_thru_orders',
+            'drive_thru_sales',
+            'doordash_orders',
+            'doordash_sales',
+            'ubereats_orders',
+            'ubereats_sales',
+            'grubhub_orders',
+            'grubhub_sales',
+            'delivery_orders',
+            'delivery_sales',
+            'carryout_orders',
+            'carryout_sales',
+            'pizza_delivery_quantity',
+            'pizza_delivery_sales',
+            'pizza_carryout_quantity',
+            'pizza_carryout_sales',
+            'hnr_delivery_quantity',
+            'hnr_delivery_sales',
+            'hnr_carryout_quantity',
+            'hnr_carryout_sales',
+            'bread_delivery_quantity',
+            'bread_delivery_sales',
+            'bread_carryout_quantity',
+            'bread_carryout_sales',
+            'wings_delivery_quantity',
+            'wings_delivery_sales',
+            'wings_carryout_quantity',
+            'wings_carryout_sales',
+            'beverages_delivery_quantity',
+            'beverages_delivery_sales',
+            'beverages_carryout_quantity',
+            'beverages_carryout_sales',
+            'other_foods_delivery_quantity',
+            'other_foods_delivery_sales',
+            'other_foods_carryout_quantity',
+            'other_foods_carryout_sales',
+            'side_items_delivery_quantity',
+            'side_items_delivery_sales',
+            'side_items_carryout_quantity',
+            'side_items_carryout_sales',
+            'sales_tax',
+            'delivery_fees',
+            'delivery_tips',
+            'store_tips',
+            'total_tips',
+            'cash_sales',
+            'over_short',
+            'portal_eligible_orders',
+            'portal_used_orders',
+            'portal_on_time_orders',
+            'digital_orders',
+            'digital_sales',
+            'hnr_transactions',
+            'hnr_broken_promises',
         ];
 
         foreach ($numeric_fields as $field) {
@@ -1239,20 +1296,20 @@ class ReportsController extends Controller
         if ($day->toDateString() >= self::NORMAL_HOURS_NEW_CUTOFF) {
             // --- New formula (floor/ceil) ---
             $floorGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_floor']);
-            $ceilGoal  = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_ceil']);
+            $ceilGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['normal_hours_ceil']);
 
             $haveGoals = $salesGoal !== null && $floorGoal !== null && $ceilGoal !== null && $otGoal !== null;
 
             if ($haveGoals) {
                 $origFloor = $floorGoal * $w;
-                $origCeil  = $ceilGoal * $w;
+                $origCeil = $ceilGoal * $w;
                 $proratedSalesGoal = $salesGoal * $w;
                 $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
-                $steps     = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
-                $updFloor  = $origFloor + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
-                $updCeil   = $origCeil  + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
-                $origOt    = $otGoal * $w;
-                $updOt     = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+                $steps = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+                $updFloor = $origFloor + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $updCeil = $origCeil + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+                $origOt = $otGoal * $w;
+                $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
                 [$normalScore, $normalCase] = $this->normalHoursScoreNew($updFloor, $updCeil, $actNormal);
                 $otScore = $this->overtimeHoursScore($updOt, $actOt, $updCeil);
@@ -1265,31 +1322,31 @@ class ReportsController extends Controller
 
             return [
                 'normal_hours' => [
-                    'key'                  => 'normal_hours',
-                    'label'                => 'Normal Hours',
-                    'score'                => round($normalScore, 2),
-                    'max'                  => $normalMax,
-                    'actual_hours'         => round($actNormal, 2),
-                    'weekly_goal_floor'    => $floorGoal,
-                    'weekly_goal_ceil'     => $ceilGoal,
-                    'prorate_fraction'     => round($w, 4),
-                    'floor_goal'           => round($updFloor, 2),
-                    'ceil_goal'            => round($updCeil, 2),
-                    'prorated_sales_goal'  => round($proratedSalesGoal, 2),
-                    'week_to_date_sales'   => round($weekToDateSalesTotal, 2),
-                    'sales_diff'           => round($salesDiff, 2),
-                    'days_elapsed'         => $weekToDateDayCount,
-                    'case'                 => $normalCase,
+                    'key' => 'normal_hours',
+                    'label' => 'Normal Hours',
+                    'score' => round($normalScore, 2),
+                    'max' => $normalMax,
+                    'actual_hours' => round($actNormal, 2),
+                    'weekly_goal_floor' => $floorGoal,
+                    'weekly_goal_ceil' => $ceilGoal,
+                    'prorate_fraction' => round($w, 4),
+                    'floor_goal' => round($updFloor, 2),
+                    'ceil_goal' => round($updCeil, 2),
+                    'prorated_sales_goal' => round($proratedSalesGoal, 2),
+                    'week_to_date_sales' => round($weekToDateSalesTotal, 2),
+                    'sales_diff' => round($salesDiff, 2),
+                    'days_elapsed' => $weekToDateDayCount,
+                    'case' => $normalCase,
                 ],
                 'overtime_hours' => [
-                    'key'                    => 'overtime_hours',
-                    'label'                  => 'Overtime Hours',
-                    'score'                  => round($otScore, 2),
-                    'max'                    => $otMax,
-                    'actual_overtime_hours'  => round($actOt, 2),
-                    'weekly_goal'            => $otGoal,
-                    'original_goal'          => round($origOt, 2),
-                    'updated_goal'           => round($updOt, 2),
+                    'key' => 'overtime_hours',
+                    'label' => 'Overtime Hours',
+                    'score' => round($otScore, 2),
+                    'max' => $otMax,
+                    'actual_overtime_hours' => round($actOt, 2),
+                    'weekly_goal' => $otGoal,
+                    'original_goal' => round($origOt, 2),
+                    'updated_goal' => round($updOt, 2),
                     'normal_goal_denominator' => round($updCeil, 2),
                 ],
             ];
@@ -1302,48 +1359,48 @@ class ReportsController extends Controller
 
         if ($haveGoals) {
             $origNormal = $normalGoal * $w;
-            $origOt     = $otGoal * $w;
+            $origOt = $otGoal * $w;
             $proratedSalesGoal = $salesGoal * $w;
-            $salesDiff  = $weekToDateSalesTotal - $proratedSalesGoal;
-            $steps      = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
-            $updNormal  = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
-            $updOt      = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
+            $salesDiff = $weekToDateSalesTotal - $proratedSalesGoal;
+            $steps = $salesDiff / self::SCORE_FLEX_DOLLARS_PER_STEP;
+            $updNormal = $origNormal + $steps * self::SCORE_FLEX_NORMAL_HOURS_STEP;
+            $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
             [$normalScore, $normalCase] = $this->normalHoursScore($origNormal, $updNormal, $actNormal);
             $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal);
         } else {
             $origNormal = $origOt = $proratedSalesGoal = 0.0;
-            $salesDiff  = $steps = $updNormal = $updOt = 0.0;
+            $salesDiff = $steps = $updNormal = $updOt = 0.0;
             $normalScore = $otScore = 0.0;
             $normalCase = 0;
         }
 
         return [
             'normal_hours' => [
-                'key'                 => 'normal_hours',
-                'label'               => 'Normal Hours',
-                'score'               => round($normalScore, 2),
-                'max'                 => $normalMax,
-                'actual_hours'        => round($actNormal, 2),
-                'weekly_goal'         => $normalGoal,
-                'prorate_fraction'    => round($w, 4),
-                'original_goal'       => round($origNormal, 2),
-                'updated_goal'        => round($updNormal, 2),
+                'key' => 'normal_hours',
+                'label' => 'Normal Hours',
+                'score' => round($normalScore, 2),
+                'max' => $normalMax,
+                'actual_hours' => round($actNormal, 2),
+                'weekly_goal' => $normalGoal,
+                'prorate_fraction' => round($w, 4),
+                'original_goal' => round($origNormal, 2),
+                'updated_goal' => round($updNormal, 2),
                 'prorated_sales_goal' => round($proratedSalesGoal, 2),
-                'week_to_date_sales'  => round($weekToDateSalesTotal, 2),
-                'sales_diff'          => round($salesDiff, 2),
-                'days_elapsed'        => $weekToDateDayCount,
-                'case'                => $normalCase,
+                'week_to_date_sales' => round($weekToDateSalesTotal, 2),
+                'sales_diff' => round($salesDiff, 2),
+                'days_elapsed' => $weekToDateDayCount,
+                'case' => $normalCase,
             ],
             'overtime_hours' => [
-                'key'                    => 'overtime_hours',
-                'label'                  => 'Overtime Hours',
-                'score'                  => round($otScore, 2),
-                'max'                    => $otMax,
-                'actual_overtime_hours'  => round($actOt, 2),
-                'weekly_goal'            => $otGoal,
-                'original_goal'          => round($origOt, 2),
-                'updated_goal'           => round($updOt, 2),
+                'key' => 'overtime_hours',
+                'label' => 'Overtime Hours',
+                'score' => round($otScore, 2),
+                'max' => $otMax,
+                'actual_overtime_hours' => round($actOt, 2),
+                'weekly_goal' => $otGoal,
+                'original_goal' => round($origOt, 2),
+                'updated_goal' => round($updOt, 2),
                 'normal_goal_denominator' => round($updNormal, 2),
             ],
         ];
