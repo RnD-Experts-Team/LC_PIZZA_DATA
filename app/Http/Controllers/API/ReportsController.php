@@ -302,6 +302,173 @@ class ReportsController extends Controller
         ];
     }
 
+    // ---------------------------------------------------------------------
+    // Sales history (all-time weekly series + fiscal period/quarter/year rollups)
+    // ---------------------------------------------------------------------
+
+    /** Numeric columns summed at every granularity (weeks, periods, quarters, years). */
+    private const SALES_HISTORY_MEASURES = [
+        'total_sales', 'customer_count', 'royalty_obligation',
+        'phone_sales', 'call_center_sales', 'drive_thru_sales',
+        'website_sales', 'mobile_sales',
+        'doordash_sales', 'ubereats_sales', 'grubhub_sales',
+    ];
+
+    /**
+     * All-time sales/customer-count/channel series for a store, in a single query,
+     * bucketed into Tuesday-Monday business weeks and rolled up (in memory) into
+     * fiscal periods, quarters, and years so the frontend can switch views freely.
+     */
+    private function buildSalesHistory(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+
+        // Bucket each business_date into its Tuesday-starting business week (matches
+        // isoBusinessWeek()'s Tue-Mon def). DAYOFWEEK: Sun=1..Sat=7 (locale-independent),
+        // so (DAYOFWEEK + 4) % 7 = days to subtract to reach the week's Tuesday.
+        $weekStartExpr = 'DATE_SUB(business_date, INTERVAL ((DAYOFWEEK(business_date) + 4) % 7) DAY)';
+
+        $rows = DailyStoreSummary::where('franchise_store', $store)
+            ->selectRaw(
+                "{$weekStartExpr} as week_start,"
+                . ' COALESCE(SUM(royalty_obligation), 0) as total_sales,'
+                . ' COALESCE(SUM(customer_count), 0) as customer_count,'
+                . ' COALESCE(SUM(royalty_obligation) - SUM(phone_sales) - SUM(call_center_sales)'
+                . ' - SUM(drive_thru_sales) - SUM(website_sales) - SUM(mobile_sales)'
+                . ' - SUM(doordash_sales) - SUM(ubereats_sales) - SUM(grubhub_sales), 0) as royalty_obligation,'
+                . ' COALESCE(SUM(phone_sales), 0) as phone_sales,'
+                . ' COALESCE(SUM(call_center_sales), 0) as call_center_sales,'
+                . ' COALESCE(SUM(drive_thru_sales), 0) as drive_thru_sales,'
+                . ' COALESCE(SUM(website_sales), 0) as website_sales,'
+                . ' COALESCE(SUM(mobile_sales), 0) as mobile_sales,'
+                . ' COALESCE(SUM(doordash_sales), 0) as doordash_sales,'
+                . ' COALESCE(SUM(ubereats_sales), 0) as ubereats_sales,'
+                . ' COALESCE(SUM(grubhub_sales), 0) as grubhub_sales'
+            )
+            ->groupByRaw($weekStartExpr)
+            ->orderByRaw($weekStartExpr)
+            ->get();
+
+        $weeks = [];
+        $periods = [];
+        $quarters = [];
+        $years = [];
+
+        foreach ($rows as $row) {
+            $weekStart = CarbonImmutable::parse($row->week_start);
+
+            // --- Fiscal calendar (mirrors buildCustomerCountAndSalesReport) ---
+            $fiscalYear = $this->fiscalYearOf($weekStart);
+            $yearStart = $this->fiscalYearStart($fiscalYear);
+            $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
+            $periodIdx = (int) floor($weekIdx / 4);
+            $periodNumber = $periodIdx + 1;
+            $weekNumber = $periodIdx * 4 + $weekIdx % 4 + 1;
+
+            // 3-3-3-4 quarters (mirrors quarterBounds); any rare 53rd-week overflow folds into Q4.
+            $quarterNumber = 4;
+            $quarterStartPeriodIdx = 9;
+            $acc = 0;
+            foreach ([3, 3, 3, 4] as $qi => $n) {
+                if ($periodIdx < $acc + $n) {
+                    $quarterNumber = $qi + 1;
+                    $quarterStartPeriodIdx = $acc;
+                    break;
+                }
+                $acc += $n;
+            }
+
+            $periodStart = $yearStart->addWeeks($periodIdx * 4);
+            $quarterStart = $yearStart->addWeeks($quarterStartPeriodIdx * 4);
+            $quarterWeeks = $quarterNumber === 4 ? 16 : 12;
+
+            // --- Week row (enriched with fiscal labels so the frontend can also regroup client-side) ---
+            $weeks[] = [
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekStart->addDays(6)->toDateString(),
+                'fiscal_year' => $fiscalYear,
+                'week_number' => $weekNumber,
+                'period_number' => $periodNumber,
+                'quarter_number' => $quarterNumber,
+            ] + $this->formatSalesMeasures($this->addSalesMeasures([], $row));
+
+            // --- Roll up into period / quarter / year buckets (keyed by canonical fiscal start) ---
+            $pKey = $periodStart->toDateString();
+            $periods[$pKey] ??= [
+                'fiscal_year' => $fiscalYear, 'number' => $periodNumber,
+                'start' => $periodStart, 'end' => $periodStart->addWeeks(4)->subDay(),
+            ];
+            $periods[$pKey] = $this->addSalesMeasures($periods[$pKey], $row);
+
+            $qKey = $quarterStart->toDateString();
+            $quarters[$qKey] ??= [
+                'fiscal_year' => $fiscalYear, 'number' => $quarterNumber,
+                'start' => $quarterStart, 'end' => $quarterStart->addWeeks($quarterWeeks)->subDay(),
+            ];
+            $quarters[$qKey] = $this->addSalesMeasures($quarters[$qKey], $row);
+
+            $yKey = (string) $fiscalYear;
+            $years[$yKey] ??= [
+                'fiscal_year' => $fiscalYear, 'number' => null,
+                'start' => $yearStart, 'end' => $this->fiscalYearStart($fiscalYear + 1)->subDay(),
+            ];
+            $years[$yKey] = $this->addSalesMeasures($years[$yKey], $row);
+        }
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+            ],
+            'weeks' => $weeks,
+            'periods' => $this->formatSalesBuckets($periods, 'period_number', 'period'),
+            'quarters' => $this->formatSalesBuckets($quarters, 'quarter_number', 'quarter'),
+            'years' => $this->formatSalesBuckets($years, null, 'year'),
+        ];
+    }
+
+    /** Accumulate one weekly SQL row's measures into a bucket (creates keys on first hit). */
+    private function addSalesMeasures(array $bucket, object $row): array
+    {
+        foreach (self::SALES_HISTORY_MEASURES as $m) {
+            $bucket[$m] = ($bucket[$m] ?? 0) + (float) $row->$m;
+        }
+        $bucket['weeks_count'] = ($bucket['weeks_count'] ?? 0) + 1;
+
+        return $bucket;
+    }
+
+    /** Round measures for output; customer_count as int, money to 2dp. */
+    private function formatSalesMeasures(array $bucket): array
+    {
+        $out = [];
+        foreach (self::SALES_HISTORY_MEASURES as $m) {
+            $out[$m] = $m === 'customer_count'
+                ? (int) round($bucket[$m] ?? 0)
+                : round((float) ($bucket[$m] ?? 0), 2);
+        }
+
+        return $out;
+    }
+
+    /** Turn the keyed period/quarter/year buckets into an ordered, labeled list. */
+    private function formatSalesBuckets(array $buckets, ?string $numberKey, string $label): array
+    {
+        $out = [];
+        foreach ($buckets as $b) {                 // insertion order = chronological
+            $meta = ['fiscal_year' => $b['fiscal_year']];
+            if ($numberKey !== null) {
+                $meta[$numberKey] = $b['number'];
+            }
+            $meta["{$label}_start"] = $b['start']->toDateString();
+            $meta["{$label}_end"] = $b['end']->toDateString();
+            $meta['weeks_count'] = $b['weeks_count'];
+            $out[] = $meta + $this->formatSalesMeasures($b);
+        }
+
+        return $out;
+    }
+
     /**
      * GET /api/reports/channel-sales/{store}/{date}
      */
@@ -412,6 +579,7 @@ class ReportsController extends Controller
             'go-to' => $this->buildGoToReport($store, $date),
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
+            'sales-history' => $this->buildSalesHistory($store, $date),
         ]);
     }
 
