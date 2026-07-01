@@ -3092,24 +3092,25 @@ class ReportsController extends Controller
         // ── Period ───────────────────────────────────────────────────────
         $fiscalYear = $this->fiscalYearOf($day);
         $yearStart = $this->fiscalYearStart($fiscalYear);
+        $prevFiscalYearStart = $this->fiscalYearStart($fiscalYear - 1);
         $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
         $periodIdx = (int) floor($weekIdx / 4);
         $periodStart = $yearStart->addWeeks($periodIdx * 4);
         $daysInPeriod = (int) $periodStart->diffInDays($day);
 
         $prevPeriodStart = $periodStart->subWeeks(4);
-        $lastYearPeriodStart = $periodStart->subWeeks(52);
+        $lastYearPeriodStart = $prevFiscalYearStart->addWeeks($periodIdx * 4);
 
         // ── Quarter (rolling 3-period window ending at current period) ───
         $quarterStart = $periodStart->subWeeks(8);
         $daysInQuarter = (int) $quarterStart->diffInDays($day);
 
         $prevQuarterStart = $quarterStart->subWeeks(12);
-        $lastYearQuarterStart = $quarterStart->subWeeks(52);
+        $lastYearQuarterStart = $lastYearPeriodStart->subWeeks(8);
 
         // ── Year ─────────────────────────────────────────────────────────
         $daysInYear = (int) $yearStart->diffInDays($day);
-        $prevYearStart = $yearStart->subWeeks(52);
+        $prevYearStart = $prevFiscalYearStart;
 
         return [
             'filtering' => [
@@ -3177,22 +3178,23 @@ class ReportsController extends Controller
 
         $fiscalYear = $this->fiscalYearOf($day);
         $yearStart = $this->fiscalYearStart($fiscalYear);
+        $prevFiscalYearStart = $this->fiscalYearStart($fiscalYear - 1);
         $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
         $periodIdx = (int) floor($weekIdx / 4);
         $periodStart = $yearStart->addWeeks($periodIdx * 4);
         $daysInPeriod = (int) $periodStart->diffInDays($day);
 
         $prevPeriodStart = $periodStart->subWeeks(4);
-        $lastYearPeriodStart = $periodStart->subWeeks(52);
+        $lastYearPeriodStart = $prevFiscalYearStart->addWeeks($periodIdx * 4);
 
         $quarterStart = $periodStart->subWeeks(8);
         $daysInQuarter = (int) $quarterStart->diffInDays($day);
 
         $prevQuarterStart = $quarterStart->subWeeks(12);
-        $lastYearQuarterStart = $quarterStart->subWeeks(52);
+        $lastYearQuarterStart = $lastYearPeriodStart->subWeeks(8);
 
         $daysInYear = (int) $yearStart->diffInDays($day);
-        $prevYearStart = $yearStart->subWeeks(52);
+        $prevYearStart = $prevFiscalYearStart;
 
         return [
             'filtering' => [
