@@ -3005,10 +3005,11 @@ class ReportsController extends Controller
 
         $fiscalYear = $this->fiscalYearOf($day);
         $yearStart = $this->fiscalYearStart($fiscalYear);
+        $prevFiscalYearStart = $this->fiscalYearStart($fiscalYear - 1);
         $weekIdx = (int) ($yearStart->diffInDays($weekStart) / 7);
         $periodIdx = (int) floor($weekIdx / 4);
         $periodStart = $yearStart->addWeeks($periodIdx * 4);
-        $quarterStart = $periodStart->subWeeks(8);
+        $quarterStart = $this->quarterBounds($yearStart, $prevFiscalYearStart, $periodIdx)['quarterStart'];
 
         $weekData = $this->cashControlDataForRange($store, $weekStart, $day);
         $periodData = $this->cashControlDataForRange($store, $periodStart, $day);
@@ -3101,12 +3102,13 @@ class ReportsController extends Controller
         $prevPeriodStart = $periodStart->subWeeks(4);
         $lastYearPeriodStart = $prevFiscalYearStart->addWeeks($periodIdx * 4);
 
-        // ── Quarter (rolling 3-period window ending at current period) ───
-        $quarterStart = $periodStart->subWeeks(8);
+        // ── Quarter (fiscal quarters group periods as 3-3-3-4: Q1=1-3, Q2=4-6, Q3=7-9, Q4=10-13) ───
+        $quarterBounds = $this->quarterBounds($yearStart, $prevFiscalYearStart, $periodIdx);
+        $quarterStart = $quarterBounds['quarterStart'];
         $daysInQuarter = (int) $quarterStart->diffInDays($day);
 
-        $prevQuarterStart = $quarterStart->subWeeks(12);
-        $lastYearQuarterStart = $lastYearPeriodStart->subWeeks(8);
+        $prevQuarterStart = $quarterBounds['prevQuarterStart'];
+        $lastYearQuarterStart = $quarterBounds['lastYearQuarterStart'];
 
         // ── Year ─────────────────────────────────────────────────────────
         $daysInYear = (int) $yearStart->diffInDays($day);
@@ -3143,6 +3145,36 @@ class ReportsController extends Controller
                 'current' => $this->salesAndCustomerCount($store, $yearStart, $day),
                 'previous' => $this->salesAndCustomerCount($store, $prevYearStart, $prevYearStart->addDays($daysInYear)),
             ],
+        ];
+    }
+
+    /**
+     * Fiscal quarters group the 13 four-week periods as 3-3-3-4:
+     * Q1 = periods 1-3, Q2 = periods 4-6, Q3 = periods 7-9, Q4 = periods 10-13.
+     */
+    private function quarterBounds(
+        CarbonImmutable $yearStart,
+        CarbonImmutable $prevFiscalYearStart,
+        int $periodIdx
+    ): array {
+        $quarterStartPeriodIdx = 0;
+
+        foreach ([3, 3, 3, 4] as $periodsInQuarter) {
+            if ($periodIdx < $quarterStartPeriodIdx + $periodsInQuarter) {
+                break;
+            }
+
+            $quarterStartPeriodIdx += $periodsInQuarter;
+        }
+
+        // Every quarter is 3 periods (12 weeks) except Q4, which is 4 (16 weeks).
+        $prevQuarterWeeks = $quarterStartPeriodIdx === 0 ? 16 : 12;
+        $quarterStart = $yearStart->addWeeks($quarterStartPeriodIdx * 4);
+
+        return [
+            'quarterStart' => $quarterStart,
+            'prevQuarterStart' => $quarterStart->subWeeks($prevQuarterWeeks),
+            'lastYearQuarterStart' => $prevFiscalYearStart->addWeeks($quarterStartPeriodIdx * 4),
         ];
     }
 
@@ -3187,11 +3219,12 @@ class ReportsController extends Controller
         $prevPeriodStart = $periodStart->subWeeks(4);
         $lastYearPeriodStart = $prevFiscalYearStart->addWeeks($periodIdx * 4);
 
-        $quarterStart = $periodStart->subWeeks(8);
+        $quarterBounds = $this->quarterBounds($yearStart, $prevFiscalYearStart, $periodIdx);
+        $quarterStart = $quarterBounds['quarterStart'];
         $daysInQuarter = (int) $quarterStart->diffInDays($day);
 
-        $prevQuarterStart = $quarterStart->subWeeks(12);
-        $lastYearQuarterStart = $lastYearPeriodStart->subWeeks(8);
+        $prevQuarterStart = $quarterBounds['prevQuarterStart'];
+        $lastYearQuarterStart = $quarterBounds['lastYearQuarterStart'];
 
         $daysInYear = (int) $yearStart->diffInDays($day);
         $prevYearStart = $prevFiscalYearStart;
