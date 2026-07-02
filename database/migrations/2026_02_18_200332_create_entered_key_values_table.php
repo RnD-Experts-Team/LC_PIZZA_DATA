@@ -24,7 +24,6 @@ return new class extends Migration {
 
             $table->timestamps();
 
-            $table->unique(['key_id', 'store_id', 'entry_date']);
             $table->index(['store_id', 'entry_date']);
             $table->index(['key_id']);
         });

@@ -42,6 +42,7 @@ class DueKeyResolverService
         $valuesToday = EnteredKeyValue::query()
             ->where('store_id', $storeId)
             ->whereDate('entry_date', $date)
+            ->current()
             ->with('attachments', 'user')
             ->get();
 
@@ -53,6 +54,7 @@ class DueKeyResolverService
         $valuesThisMonth = EnteredKeyValue::query()
             ->where('store_id', $storeId)
             ->whereBetween('entry_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
+            ->current()
             ->with('attachments', 'user')
             ->get()
             ->groupBy('key_id');

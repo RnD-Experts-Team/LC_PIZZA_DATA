@@ -701,6 +701,7 @@ class ReportsController extends Controller
         $laborEntries = EnteredKeyValue::whereIn('store_id', $stores)
             ->where('key_id', self::LABOR_ENTERED_KEY_ID)
             ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->where('is_mistaken', false)
             ->get();
 
         $grandTotals = $this->initializeMetricsBag();
@@ -1919,6 +1920,7 @@ class ReportsController extends Controller
             ->where('store_id', $store)
             ->where('key_id', $keyId)
             ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->where('is_mistaken', false)
             ->orderBy('entry_date', 'desc')
             ->orderBy('id', 'desc')
             ->first(['value_number']);
@@ -2463,6 +2465,7 @@ class ReportsController extends Controller
             ->where('store_id', $store)
             ->where('key_id', $keyId)
             ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+            ->where('is_mistaken', false)
             ->sum('value_number');
     }
 
