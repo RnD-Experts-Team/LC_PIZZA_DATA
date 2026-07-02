@@ -3,9 +3,12 @@
 namespace App\Services;
 
 use App\Models\TransferInOut;
+use Illuminate\Support\Facades\DB;
 
 class TransferInOutCsvProcessor
 {
+    private const CHUNK_SIZE = 500;
+
     public function process(string $filePath): array
     {
         $results = [
@@ -29,6 +32,8 @@ class TransferInOutCsvProcessor
             }
 
             $rowNumber = 0;
+            $chunk = [];
+
             while (($row = fgetcsv($handle)) !== false) {
                 $rowNumber++;
 
@@ -40,14 +45,21 @@ class TransferInOutCsvProcessor
                 $results['total_rows']++;
 
                 try {
-                    $this->importRow($row);
-                    $results['imported_rows']++;
+                    $chunk[] = $this->parseRow($row);
                 } catch (\Exception $e) {
                     $results['failed_rows'][] = [
                         'row' => $rowNumber,
                         'error' => $e->getMessage(),
                     ];
                 }
+
+                if (count($chunk) >= self::CHUNK_SIZE) {
+                    $results['imported_rows'] += $this->flush($chunk);
+                }
+            }
+
+            if (!empty($chunk)) {
+                $results['imported_rows'] += $this->flush($chunk);
             }
 
             fclose($handle);
@@ -59,13 +71,25 @@ class TransferInOutCsvProcessor
         return $results;
     }
 
-    private function importRow(array $row): void
+    private function flush(array &$chunk): int
+    {
+        $count = count($chunk);
+        DB::transaction(function () use ($chunk) {
+            TransferInOut::insert($chunk);
+        });
+        $chunk = [];
+        return $count;
+    }
+
+    private function parseRow(array $row): array
     {
         if (count($row) < 10) {
             throw new \Exception('Row does not have all required columns');
         }
 
-        TransferInOut::create([
+        $now = now();
+
+        return [
             'major_category'            => trim($row[0] ?? ''),
             'date'                      => $this->parseDate($row[1] ?? ''),
             'to_store_number'           => trim($row[2] ?? ''),
@@ -77,7 +101,9 @@ class TransferInOutCsvProcessor
             'unit'                      => trim($row[8] ?? ''),
             'total_cost'                => (float) ($row[9] ?? 0),
             'is_posted'                 => isset($row[10]) ? ((int) $row[10] === 1) : true,
-        ]);
+            'created_at'                => $now,
+            'updated_at'                => $now,
+        ];
     }
 
     private function parseDate(string $value): string

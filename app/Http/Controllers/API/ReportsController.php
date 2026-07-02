@@ -23,6 +23,7 @@ use App\Models\NonNegotiableReport;
 use App\Models\GoToCall;
 use App\Models\TransferInOut;
 use App\Models\InventoryOrder;
+use App\Models\CleaningReview;
 /**
  * DSPR Lite Report Controller
  *
@@ -199,6 +200,41 @@ class ReportsController extends Controller
                 'is_store_manager' => $storeManagerCount,
                 'is_call_center' => $callCenterCount,
             ],
+        ];
+    }
+
+    public function cleaningReviewReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildCleaningReviewReport($store, $date));
+    }
+
+    private function buildCleaningReviewReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $entries = CleaningReview::where('store_number', $store)
+            ->whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
+            ->get(['review_place', 'score']);
+
+        $total = $entries->count();
+        $passes = $entries->where('score', 'Pass')->count();
+        $overallScore = $total > 0 ? round($passes / $total * 100, 2) : 0;
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'overall_score' => $overallScore,
+            'entries' => $entries->map(fn ($e) => [
+                'review_place' => $e->review_place,
+                'score' => $e->score,
+            ])->values(),
         ];
     }
 
@@ -577,6 +613,7 @@ class ReportsController extends Controller
             'promo' => $this->buildPromoReport($store, $date),
             'non-negotiable-reports' => $this->buildNonNegotiableReports($store, $date),
             'go-to' => $this->buildGoToReport($store, $date),
+            'cleaning-review' => $this->buildCleaningReviewReport($store, $date),
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
             'sales-history' => $this->buildSalesHistory($store, $date),

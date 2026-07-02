@@ -4,11 +4,11 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\API\Concerns\HandlesCsvFileUpload;
-use App\Services\GoToCallCsvProcessor;
+use App\Services\CleaningReviewCsvProcessor;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
-class GoToCallController extends Controller
+class CleaningReviewController extends Controller
 {
     use HandlesCsvFileUpload;
 
@@ -16,9 +16,9 @@ class GoToCallController extends Controller
     {
         return $this->processCsvUpload(
             $request,
-            'go_to_calls_uploads',
-            'go_to_call_',
-            fn (string $filePath) => (new GoToCallCsvProcessor())->process($filePath)
+            'cleaning_review_uploads',
+            'cleaning_review_',
+            fn (string $filePath) => (new CleaningReviewCsvProcessor())->process($filePath)
         );
     }
 }
