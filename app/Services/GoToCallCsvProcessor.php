@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\DB;
 
 class GoToCallCsvProcessor
 {
+    private const CHUNK_SIZE = 500;
+
     public function process(string $filePath): array
     {
         $results = [
@@ -31,6 +33,9 @@ class GoToCallCsvProcessor
             }
 
             $rowNumber = 0;
+            $chunkParents = [];
+            $chunkParticipants = [];
+
             while (($row = fgetcsv($handle)) !== false) {
                 $rowNumber++;
 
@@ -42,14 +47,23 @@ class GoToCallCsvProcessor
                 $results['total_rows']++;
 
                 try {
-                    $this->importRow($row);
-                    $results['imported_rows']++;
+                    [$parentAttrs, $participants] = $this->parseRow($row);
+                    $chunkParents[] = $parentAttrs;
+                    $chunkParticipants[] = $participants;
                 } catch (\Exception $e) {
                     $results['failed_rows'][] = [
                         'row' => $rowNumber,
                         'error' => $e->getMessage(),
                     ];
                 }
+
+                if (count($chunkParents) >= self::CHUNK_SIZE) {
+                    $results['imported_rows'] += $this->flushChunk($chunkParents, $chunkParticipants);
+                }
+            }
+
+            if (!empty($chunkParents)) {
+                $results['imported_rows'] += $this->flushChunk($chunkParents, $chunkParticipants);
             }
 
             fclose($handle);
@@ -61,7 +75,49 @@ class GoToCallCsvProcessor
         return $results;
     }
 
-    private function importRow(array $row): void
+    /**
+     * Insert a buffered chunk of GoToCall rows (and their participants) inside a
+     * single DB transaction, so the commit/fsync cost is paid once per chunk
+     * instead of once per row/participant.
+     */
+    private function flushChunk(array &$parents, array &$participantsByRow): int
+    {
+        $imported = 0;
+
+        DB::transaction(function () use (&$parents, &$participantsByRow, &$imported) {
+            foreach ($parents as $i => $attrs) {
+                $call = GoToCall::create($attrs);
+
+                $participants = $participantsByRow[$i];
+                if (!empty($participants)) {
+                    $now = now();
+                    $participantRows = array_map(fn ($p) => [
+                        'go_to_call_id' => $call->id,
+                        'participant' => $p,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ], $participants);
+
+                    GoToCallParticipant::insert($participantRows);
+                }
+
+                $imported++;
+            }
+        });
+
+        $parents = [];
+        $participantsByRow = [];
+
+        return $imported;
+    }
+
+    /**
+     * Parse a CSV row into GoToCall attributes + its participant list, without
+     * touching the database.
+     *
+     * @return array{0: array, 1: array}
+     */
+    private function parseRow(array $row): array
     {
         // Validate row has all required columns
         if (count($row) < 10) {
@@ -76,22 +132,16 @@ class GoToCallCsvProcessor
         $participants = $this->parseParticipants($row[5] ?? '');
         $status = $this->parseStatus($row[6], $row[7], $row[8], $row[9]);
 
-        $call = GoToCall::create([
+        $attrs = [
             'store_number' => $storeNumber,
             'datetime' => $datetime,
             'duration' => $duration,
             'call_result' => $callResult,
             'from' => $from,
             'status' => $status,
-        ]);
+        ];
 
-        // Create participant records
-        foreach ($participants as $participant) {
-            GoToCallParticipant::create([
-                'go_to_call_id' => $call->id,
-                'participant' => $participant,
-            ]);
-        }
+        return [$attrs, $participants];
     }
 
     private function parseStoreNumber(string $value): string

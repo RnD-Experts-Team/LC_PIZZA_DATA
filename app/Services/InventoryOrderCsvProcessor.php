@@ -3,9 +3,12 @@
 namespace App\Services;
 
 use App\Models\InventoryOrder;
+use Illuminate\Support\Facades\DB;
 
 class InventoryOrderCsvProcessor
 {
+    private const CHUNK_SIZE = 500;
+
     public function process(string $filePath): array
     {
         $results = [
@@ -29,6 +32,8 @@ class InventoryOrderCsvProcessor
             }
 
             $rowNumber = 0;
+            $chunk = [];
+
             while (($row = fgetcsv($handle)) !== false) {
                 $rowNumber++;
 
@@ -40,14 +45,21 @@ class InventoryOrderCsvProcessor
                 $results['total_rows']++;
 
                 try {
-                    $this->importRow($row);
-                    $results['imported_rows']++;
+                    $chunk[] = $this->parseRow($row);
                 } catch (\Exception $e) {
                     $results['failed_rows'][] = [
                         'row' => $rowNumber,
                         'error' => $e->getMessage(),
                     ];
                 }
+
+                if (count($chunk) >= self::CHUNK_SIZE) {
+                    $results['imported_rows'] += $this->flush($chunk);
+                }
+            }
+
+            if (!empty($chunk)) {
+                $results['imported_rows'] += $this->flush($chunk);
             }
 
             fclose($handle);
@@ -59,7 +71,17 @@ class InventoryOrderCsvProcessor
         return $results;
     }
 
-    private function importRow(array $row): void
+    private function flush(array &$chunk): int
+    {
+        $count = count($chunk);
+        DB::transaction(function () use ($chunk) {
+            InventoryOrder::insert($chunk);
+        });
+        $chunk = [];
+        return $count;
+    }
+
+    private function parseRow(array $row): array
     {
         // CSV has 13 columns; column index 3 is skipped (not saved)
         if (count($row) < 13) {
@@ -80,7 +102,9 @@ class InventoryOrderCsvProcessor
         // col 11: order_status
         // col 12: is_posted
 
-        InventoryOrder::create([
+        $now = now();
+
+        return [
             'delivery_date'   => $this->parseDate($row[0] ?? ''),
             'invoice_no'      => trim($row[1] ?? ''),
             'store_number'    => trim($row[2] ?? ''),
@@ -93,7 +117,9 @@ class InventoryOrderCsvProcessor
             'is_ordered'      => (int) ($row[10] ?? 0) === 1,
             'order_status'    => trim($row[11] ?? ''),
             'is_posted'       => (int) ($row[12] ?? 0) === 1,
-        ]);
+            'created_at'      => $now,
+            'updated_at'      => $now,
+        ];
     }
 
     private function parseDate(string $value): string

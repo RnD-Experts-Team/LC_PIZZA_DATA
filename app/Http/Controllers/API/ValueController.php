@@ -54,7 +54,7 @@ class ValueController extends Controller
             $identity['user_id'] = auth()->id();
         }
 
-        $value = EnteredKeyValue::updateOrCreate(
+        $value = $this->versionedUpsert(
             $identity,
             [
                 'user_id' => auth()->id(),
@@ -66,16 +66,14 @@ class ValueController extends Controller
             ]
         );
 
-        if ($request->has('attachments') || $request->hasFile('attachments')) {
-            $this->syncUploadedAttachments(
-                $value,
-                $this->normalizeFiles($request->file('attachments', []))
-            );
-        }
+        $hasInput = $request->has('attachments') || $request->hasFile('attachments');
+        $this->applyAttachments(
+            $value,
+            $hasInput,
+            $this->normalizeFiles($request->file('attachments', []))
+        );
 
-        $value->loadMissing('attachments');
-
-        return response()->json($value);
+        return response()->json($this->valueResponsePayload($value));
     }
 
     /**
@@ -113,7 +111,7 @@ class ValueController extends Controller
                     $identity['user_id'] = auth()->id();
                 }
 
-                $value = EnteredKeyValue::updateOrCreate(
+                $value = $this->versionedUpsert(
                     $identity,
                     [
                         'user_id' => auth()->id(),
@@ -125,16 +123,16 @@ class ValueController extends Controller
                     ]
                 );
 
-                if (data_get($request->all(), "items.$index.attachments") !== null || $request->hasFile("items.$index.attachments")) {
-                    $this->syncUploadedAttachments(
-                        $value,
-                        $this->normalizeFiles($request->file("items.$index.attachments", []))
-                    );
-                }
+                $hasInput = data_get($request->all(), "items.$index.attachments") !== null
+                    || $request->hasFile("items.$index.attachments");
 
-                $value->loadMissing('attachments');
+                $this->applyAttachments(
+                    $value,
+                    $hasInput,
+                    $this->normalizeFiles($request->file("items.$index.attachments", []))
+                );
 
-                $out[] = $value;
+                $out[] = $this->valueResponsePayload($value);
             }
 
             return $out;
@@ -310,6 +308,133 @@ class ValueController extends Controller
             'date' => $date->toDateString(),
             'grid' => $grid->values(),
         ]);
+    }
+
+    /**
+     * Persist a value with mistaken-versioning: editing an existing value keeps the old
+     * row (flagged is_mistaken) and creates a new current row linked via corrected_from_id.
+     * Identical resubmits and note-only edits update the current row in place.
+     */
+    private function versionedUpsert(array $identity, array $attributes): EnteredKeyValue
+    {
+        return DB::transaction(function () use ($identity, $attributes) {
+
+            $current = EnteredKeyValue::query()
+                ->where($identity)
+                ->current()
+                ->orderByDesc('id')
+                ->lockForUpdate()
+                ->first();
+
+            if (!$current) {
+                return EnteredKeyValue::create(
+                    $identity + $attributes + ['is_mistaken' => false]
+                );
+            }
+
+            if ($this->valuesEqual($current, $attributes)) {
+                // Value unchanged: apply metadata/note edits in place, no new version.
+                $current->update($attributes);
+
+                return $current;
+            }
+
+            $current->update([
+                'is_mistaken' => true,
+                'superseded_at' => now(),
+            ]);
+
+            return EnteredKeyValue::create(
+                $identity + $attributes + [
+                    'is_mistaken' => false,
+                    'corrected_from_id' => $current->id,
+                ]
+            );
+        });
+    }
+
+    /**
+     * True when the incoming value columns match the current row (note is intentionally
+     * excluded — a note-only change is not a mistaken value and edits in place).
+     */
+    private function valuesEqual(EnteredKeyValue $current, array $attributes): bool
+    {
+        $curNumber = $current->value_number;
+        $newNumber = $attributes['value_number'] ?? null;
+
+        $numberEqual = ($curNumber === null && $newNumber === null)
+            || ($curNumber !== null && $newNumber !== null
+                && abs((float) $curNumber - (float) $newNumber) < 0.00005);
+
+        $curBoolean = $current->value_boolean === null ? null : (bool) $current->value_boolean;
+        $newBooleanRaw = $attributes['value_boolean'] ?? null;
+        $newBoolean = $newBooleanRaw === null ? null : (bool) $newBooleanRaw;
+
+        return $current->value_text === ($attributes['value_text'] ?? null)
+            && $numberEqual
+            && $curBoolean === $newBoolean
+            && $current->value_json == ($attributes['value_json'] ?? null);
+    }
+
+    /**
+     * Route attachment input to the current row, or preserve prior files when a value
+     * edit created a new row without new uploads.
+     */
+    private function applyAttachments(EnteredKeyValue $value, bool $hasInput, array $files): void
+    {
+        if ($hasInput) {
+            $this->syncUploadedAttachments($value, $files);
+
+            return;
+        }
+
+        if ($value->wasRecentlyCreated && $value->corrected_from_id) {
+            $this->carryForwardAttachments($value->correctedFrom, $value);
+        }
+    }
+
+    /**
+     * Copy attachment records from a superseded row onto the new current row. Both rows
+     * reference the same stored files (no re-upload, no physical delete).
+     */
+    private function carryForwardAttachments(?EnteredKeyValue $from, EnteredKeyValue $to): void
+    {
+        if ($from === null) {
+            return;
+        }
+
+        $from->loadMissing('attachments');
+
+        $payload = $from->attachments->map(fn($a) => [
+            'file_path' => $a->file_path,
+            'disk' => $a->disk,
+            'original_name' => $a->original_name,
+            'mime_type' => $a->mime_type,
+            'size' => $a->size,
+        ])->all();
+
+        if (empty($payload)) {
+            return;
+        }
+
+        $to->attachments()->createMany($payload);
+    }
+
+    /**
+     * Response shape: the current value plus its mistaken history (newest-first).
+     */
+    private function valueResponsePayload(EnteredKeyValue $value): array
+    {
+        $value->loadMissing('attachments');
+
+        $payload = $value->toArray();
+
+        $payload['mistaken_versions'] = $value->mistakenVersions()
+            ->map(fn(EnteredKeyValue $version) => $version->loadMissing('attachments')->toArray())
+            ->values()
+            ->all();
+
+        return $payload;
     }
 
     private function syncUploadedAttachments(EnteredKeyValue $value, array $files): void

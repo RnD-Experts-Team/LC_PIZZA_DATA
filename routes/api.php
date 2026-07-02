@@ -15,6 +15,7 @@ use App\Http\Controllers\API\{
     GoalController,
     GoToCallController,
     InventoryController,
+    CleaningReviewController,
 };
 
 
@@ -48,6 +49,7 @@ Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'
 Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware('auth.token.store');
 Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware('auth.token.store');
 Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToReport'])->middleware('auth.token.store');
+Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class, 'cleaningReviewReport'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
@@ -150,3 +152,10 @@ Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class,
 
 Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware('auth.token.store');
 Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// CLEANING REVIEW ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware('auth.token.store');
