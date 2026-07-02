@@ -735,11 +735,17 @@ class ReportsController extends Controller
             ->with('participants')
             ->get();
 
-        $laborEntries = EnteredKeyValue::whereIn('store_id', $stores)
-            ->where('key_id', self::LABOR_ENTERED_KEY_ID)
-            ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
-            ->where('is_mistaken', false)
-            ->get();
+        // One value per store per day: take the latest entry for that store/day
+        // (whichever user filled it out last), not a sum across every filler.
+        $laborEntries = EnteredKeyValue::whereIn('id', function ($q) use ($stores, $start, $end) {
+            $q->from('entered_key_values')
+                ->selectRaw('MAX(id)')
+                ->whereIn('store_id', $stores)
+                ->where('key_id', self::LABOR_ENTERED_KEY_ID)
+                ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+                ->where('is_mistaken', false)
+                ->groupBy('store_id', 'entry_date');
+        })->get();
 
         $grandTotals = $this->initializeMetricsBag();
         $byStore = [];
@@ -2492,6 +2498,11 @@ class ReportsController extends Controller
         ];
     }
 
+    /**
+     * Sum of the latest entered-key value per day for a store within the range.
+     * Multiple users can fill the same key/day (fill_mode = role_each); only the
+     * latest entry per day counts, regardless of who filled it out.
+     */
     private function enteredKeyValueSumForRange(
         string $store,
         int $keyId,
@@ -2499,10 +2510,15 @@ class ReportsController extends Controller
         CarbonImmutable $end
     ): float {
         return (float) EnteredKeyValue::query()
-            ->where('store_id', $store)
-            ->where('key_id', $keyId)
-            ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
-            ->where('is_mistaken', false)
+            ->whereIn('id', function ($q) use ($store, $keyId, $start, $end) {
+                $q->from('entered_key_values')
+                    ->selectRaw('MAX(id)')
+                    ->where('store_id', $store)
+                    ->where('key_id', $keyId)
+                    ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
+                    ->where('is_mistaken', false)
+                    ->groupBy('entry_date');
+            })
             ->sum('value_number');
     }
 
