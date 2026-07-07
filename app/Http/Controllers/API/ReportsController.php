@@ -50,6 +50,11 @@ class ReportsController extends Controller
     ];
 
     private const LABOR_ENTERED_KEY_ID = 23;
+    // Starting 2026-07-07, labor is entered a day late under key 28 ("Yesterday's
+    // Labor Cost"): the entry dated D holds the labor cost for business date D-1.
+    // So a business date on/after the cutoff pulls key 28 from entry_date = date+1.
+    private const LABOR_YESTERDAY_KEY_ID = 28;
+    private const LABOR_YESTERDAY_KEY_CUTOFF = '2026-07-07';
     private const IN_STORE_BUCKET = [
         'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
         'fulfilled' => ['Register', 'Drive-Thru'],
@@ -741,10 +746,9 @@ class ReportsController extends Controller
             $q->from('entered_key_values')
                 ->selectRaw('MAX(id)')
                 ->whereIn('store_id', $stores)
-                ->where('key_id', self::LABOR_ENTERED_KEY_ID)
-                ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
-                ->where('is_mistaken', false)
-                ->groupBy('store_id', 'entry_date');
+                ->where('is_mistaken', false);
+            $this->applyLaborKeySegments($q, $start, $end);
+            $q->groupBy('store_id', 'entry_date');
         })->get();
 
         $grandTotals = $this->initializeMetricsBag();
@@ -1119,15 +1123,13 @@ class ReportsController extends Controller
         $weekToDateSalesTotal = $this->sumSalesByDayRange($thisWeekByDay, $weekToDateStart, $weekToDateEnd);
         $weekToDateSalesAvg = $this->averageValue($weekToDateSalesTotal, $weekToDateDayCount);
 
-        $laborValueDay = $this->enteredKeyValueSumForRange(
+        $laborValueDay = $this->laborValueSumForRange(
             $store,
-            self::LABOR_ENTERED_KEY_ID,
             $day,
             $day
         );
-        $laborWeekToDateSum = $this->enteredKeyValueSumForRange(
+        $laborWeekToDateSum = $this->laborValueSumForRange(
             $store,
-            self::LABOR_ENTERED_KEY_ID,
             $weekToDateStart,
             $weekToDateEnd
         );
@@ -2518,6 +2520,59 @@ class ReportsController extends Controller
                     ->whereBetween('entry_date', [$start->toDateString(), $end->toDateString()])
                     ->where('is_mistaken', false)
                     ->groupBy('entry_date');
+            })
+            ->sum('value_number');
+    }
+
+    /**
+     * Constrains a query to the entered-key rows that hold labor cost for the
+     * business dates in [$start, $end], covering the key 23 -> key 28 switchover:
+     * dates before the cutoff read key 23 at entry_date = date; dates on/after the
+     * cutoff read key 28 at entry_date = date + 1 day.
+     */
+    private function applyLaborKeySegments(Builder $query, CarbonImmutable $start, CarbonImmutable $end): void
+    {
+        $cutoff = CarbonImmutable::parse(self::LABOR_YESTERDAY_KEY_CUTOFF);
+        $oldEnd = $end->lt($cutoff) ? $end : $cutoff->subDay();
+        $newStart = $start->gte($cutoff) ? $start : $cutoff;
+
+        $query->where(function (Builder $q) use ($start, $oldEnd, $newStart, $end) {
+            if ($start->lte($oldEnd)) {
+                $q->orWhere(function (Builder $q2) use ($start, $oldEnd) {
+                    $q2->where('key_id', self::LABOR_ENTERED_KEY_ID)
+                        ->whereBetween('entry_date', [$start->toDateString(), $oldEnd->toDateString()]);
+                });
+            }
+
+            if ($newStart->lte($end)) {
+                $q->orWhere(function (Builder $q2) use ($newStart, $end) {
+                    $q2->where('key_id', self::LABOR_YESTERDAY_KEY_ID)
+                        ->whereBetween('entry_date', [
+                            $newStart->addDay()->toDateString(),
+                            $end->addDay()->toDateString(),
+                        ]);
+                });
+            }
+        });
+    }
+
+    /**
+     * Sum of labor cost per business day for a store within the range, accounting
+     * for the key 23 -> key 28 (yesterday's labor) switchover. See applyLaborKeySegments().
+     */
+    private function laborValueSumForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): float {
+        return (float) EnteredKeyValue::query()
+            ->whereIn('id', function ($q) use ($store, $start, $end) {
+                $q->from('entered_key_values')
+                    ->selectRaw('MAX(id)')
+                    ->where('store_id', $store)
+                    ->where('is_mistaken', false);
+                $this->applyLaborKeySegments($q, $start, $end);
+                $q->groupBy('entry_date');
             })
             ->sum('value_number');
     }
