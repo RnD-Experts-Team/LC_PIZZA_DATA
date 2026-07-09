@@ -24,6 +24,7 @@ use App\Models\GoToCall;
 use App\Models\TransferInOut;
 use App\Models\InventoryOrder;
 use App\Models\CleaningReview;
+use App\Models\CustomerService;
 /**
  * DSPR Lite Report Controller
  *
@@ -236,11 +237,59 @@ class ReportsController extends Controller
                 'week_end' => $weekEnd->toDateString(),
             ],
             'overall_score' => $overallScore,
-            'entries' => $entries->map(fn ($e) => [
+            'entries' => $entries->map(fn($e) => [
                 'review_place' => $e->review_place,
                 'score' => $e->score,
             ])->values(),
         ];
+    }
+
+    public function customerServiceReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildCustomerServiceReport($store, $date));
+    }
+
+    private function buildCustomerServiceReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $entries = CustomerService::where('store_number', $store)
+            ->whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
+            ->get(['date', 'lobby_in', 'lobby_out', 'drive_thru_in', 'drive_thru_out', 'guest_service']);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'entries' => $entries->map(fn($e) => [
+                'date' => $e->date->toDateString(),
+                'guest_service' => (float) $e->guest_service,
+                'lobby_points' => $this->timePoints($e->lobby_in, $e->lobby_out),
+                'drive_thru_points' => $this->timePoints($e->drive_thru_in, $e->drive_thru_out),
+            ])->values(),
+        ];
+    }
+
+    private function timePoints(?string $start, ?string $end): ?float
+    {
+        if ($start === null || $end === null) {
+            return null;
+        }
+
+        return round($this->timeToMinutes($end) - $this->timeToMinutes($start), 2);
+    }
+
+    private function timeToMinutes(string $time): float
+    {
+        [$hours, $minutes, $seconds] = array_pad(explode(':', $time), 3, 0);
+
+        return ((int) $hours) * 60 + ((int) $minutes) + ((int) $seconds) / 60;
     }
 
     public function transferInOutReport(string $store, string $date): JsonResponse
@@ -349,10 +398,17 @@ class ReportsController extends Controller
 
     /** Numeric columns summed at every granularity (weeks, periods, quarters, years). */
     private const SALES_HISTORY_MEASURES = [
-        'total_sales', 'customer_count', 'royalty_obligation',
-        'phone_sales', 'call_center_sales', 'drive_thru_sales',
-        'website_sales', 'mobile_sales',
-        'doordash_sales', 'ubereats_sales', 'grubhub_sales',
+        'total_sales',
+        'customer_count',
+        'royalty_obligation',
+        'phone_sales',
+        'call_center_sales',
+        'drive_thru_sales',
+        'website_sales',
+        'mobile_sales',
+        'doordash_sales',
+        'ubereats_sales',
+        'grubhub_sales',
     ];
 
     /**
@@ -436,22 +492,28 @@ class ReportsController extends Controller
             // --- Roll up into period / quarter / year buckets (keyed by canonical fiscal start) ---
             $pKey = $periodStart->toDateString();
             $periods[$pKey] ??= [
-                'fiscal_year' => $fiscalYear, 'number' => $periodNumber,
-                'start' => $periodStart, 'end' => $periodStart->addWeeks(4)->subDay(),
+                'fiscal_year' => $fiscalYear,
+                'number' => $periodNumber,
+                'start' => $periodStart,
+                'end' => $periodStart->addWeeks(4)->subDay(),
             ];
             $periods[$pKey] = $this->addSalesMeasures($periods[$pKey], $row);
 
             $qKey = $quarterStart->toDateString();
             $quarters[$qKey] ??= [
-                'fiscal_year' => $fiscalYear, 'number' => $quarterNumber,
-                'start' => $quarterStart, 'end' => $quarterStart->addWeeks($quarterWeeks)->subDay(),
+                'fiscal_year' => $fiscalYear,
+                'number' => $quarterNumber,
+                'start' => $quarterStart,
+                'end' => $quarterStart->addWeeks($quarterWeeks)->subDay(),
             ];
             $quarters[$qKey] = $this->addSalesMeasures($quarters[$qKey], $row);
 
             $yKey = (string) $fiscalYear;
             $years[$yKey] ??= [
-                'fiscal_year' => $fiscalYear, 'number' => null,
-                'start' => $yearStart, 'end' => $this->fiscalYearStart($fiscalYear + 1)->subDay(),
+                'fiscal_year' => $fiscalYear,
+                'number' => null,
+                'start' => $yearStart,
+                'end' => $this->fiscalYearStart($fiscalYear + 1)->subDay(),
             ];
             $years[$yKey] = $this->addSalesMeasures($years[$yKey], $row);
         }
@@ -619,6 +681,7 @@ class ReportsController extends Controller
             'non-negotiable-reports' => $this->buildNonNegotiableReports($store, $date),
             'go-to' => $this->buildGoToReport($store, $date),
             'cleaning-review' => $this->buildCleaningReviewReport($store, $date),
+            'customer-service' => $this->buildCustomerServiceReport($store, $date),
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
             'sales-history' => $this->buildSalesHistory($store, $date),

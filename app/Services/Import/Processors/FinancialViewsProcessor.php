@@ -33,4 +33,15 @@ class FinancialViewsProcessor extends BaseTableProcessor
             'amount' => 'amount',
         ]);
     }
+
+    protected function transformData(array $row): array
+    {
+        $row = parent::transformData($row);
+
+        if (array_key_exists('amount', $row) && $row['amount'] !== null) {
+            $row['amount'] = $this->toNumeric(str_replace(',', '', (string) $row['amount']));
+        }
+
+        return $row;
+    }
 }
