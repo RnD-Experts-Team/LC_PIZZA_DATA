@@ -162,3 +162,4 @@ Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'upload
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware('auth.token.store');
+Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'uploadCustomerServiceCsv'])->middleware('auth.token.store');
