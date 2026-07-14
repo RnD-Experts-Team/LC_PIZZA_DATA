@@ -114,6 +114,41 @@ class EmployeeDebriefController extends Controller
     }
 
     /**
+     * List all debrief notes for a single employee
+     */
+    public function byEmployee(Request $request, string $store_id, string $employee_id): JsonResponse
+    {
+        $request->merge(['employee_id' => $employee_id]);
+
+        $request->validate([
+            'employee_id' => [
+                'required',
+                'integer'
+            ],
+            'per_page' => 'nullable|integer|min:1|max:200',
+        ]);
+
+        $q = EmployeeDebrief::query()
+            ->where('store_id', $store_id)
+            ->where('employee_id', $employee_id)
+            ->with(['author', 'employee', 'attachments'])
+            ->orderByDesc('date')
+            ->orderByDesc('id');
+
+        $paginated = filter_var($request->query('paginated', true), FILTER_VALIDATE_BOOLEAN);
+
+        if (!$paginated) {
+            return response()->json($q->get());
+        }
+
+        $perPage = (int) $request->query('per_page', 50);
+
+        return response()->json(
+            $q->paginate($perPage)
+        );
+    }
+
+    /**
      * Create note
      */
     public function store(Request $request, string $store_id): JsonResponse
