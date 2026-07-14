@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\Employee;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
@@ -91,19 +92,52 @@ class AuthTokenStoreScopeMiddleware
             abort(401, 'Unauthorized: missing user id');
         }
 
-        // 6) DO NOT REPLICATE USERS HERE.
+        // 6) Who does this token belong to? Auth-system users and hiring-system
+        // employees live in DIFFERENT id spaces — user.id from the verify
+        // response is an employee id when subject_type=employee, and must never
+        // be looked up in the users table (ids can collide). Older auth-server
+        // responses don't send subject_type → default to 'user'.
+        $subjectType = (string) (
+            $verify['subject_type']
+            ?? data_get($verify, 'ext.subject_type')
+            ?? 'user'
+        );
+
+        // Expose roles/perms/ext to downstream middlewares/controllers
+        $request->attributes->set('authz_subject_type', $subjectType);
+        $request->attributes->set('authz_roles', (array) ($verify['roles'] ?? []));
+        $request->attributes->set('authz_permissions', (array) ($verify['permissions'] ?? []));
+        $request->attributes->set('authz_ext', (array) ($verify['ext'] ?? []));
+
+        if ($subjectType === 'employee') {
+            // Employees are replicated from hiring.v1.employee.* events into
+            // the local employees table (same hiring id).
+            $employee = Employee::query()->find($userId);
+            if (!$employee) {
+                abort(401, 'Unauthorized: employee not synced yet');
+            }
+
+            if (!$employee->active) {
+                abort(401, 'Unauthorized: employee inactive');
+            }
+
+            // Employee is NOT an Authenticatable here — no Auth::login().
+            // Employee-accessible controllers must read these attributes
+            // instead of Auth::user().
+            $request->attributes->set('authz_employee_id', (int) $employee->id);
+            $request->attributes->set('authz_employee', $employee);
+
+            return $next($request);
+        }
+
+        // 7) DO NOT REPLICATE USERS HERE.
         $user = User::query()->find($userId);
         if (!$user) {
             abort(401, 'Unauthorized: user not synced yet');
         }
 
-        // 7) Login for session-based parts of this app
+        // 8) Login for session-based parts of this app
         Auth::login($user);
-
-        // 8) Expose roles/perms/ext to downstream middlewares/controllers
-        $request->attributes->set('authz_roles', (array) ($verify['roles'] ?? []));
-        $request->attributes->set('authz_permissions', (array) ($verify['permissions'] ?? []));
-        $request->attributes->set('authz_ext', (array) ($verify['ext'] ?? []));
 
         return $next($request);
     }
