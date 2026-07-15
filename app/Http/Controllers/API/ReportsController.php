@@ -1201,6 +1201,7 @@ class ReportsController extends Controller
         $laborPercent = $this->percentOfSales($laborValueDay, $daySales);
         $laborWeekToDatePercent = $this->percentOfSales($laborWeekToDateSum, $weekToDateSalesTotal);
         $laborWeekToDateAvgPercent = $this->percentOfSales($laborWeekToDateAvgValue, $weekToDateSalesAvg);
+        $laborWeekToDateByDay = $this->laborByDayForRange($store, $weekToDateStart, $weekToDateEnd, $thisWeekByDay);
 
         $upsellingDay = $this->upsellingForRange($store, $day, $day);
         $upsellingWeekToDate = $this->upsellingForRange($store, $weekToDateStart, $weekToDateEnd);
@@ -1392,6 +1393,7 @@ class ReportsController extends Controller
                 'labor' => $laborPercent,
                 'labor_week_to_date' => $laborWeekToDatePercent,
                 'labor_week_to_date_avg' => $laborWeekToDateAvgPercent,
+                'labor_week_to_date_by_day' => $laborWeekToDateByDay,
 
                 'portal' => array_merge($this->portalMetrics($store, $day), [
                     'week_to_date' => $weekToDatePortal,
@@ -2638,6 +2640,31 @@ class ReportsController extends Controller
                 $q->groupBy('entry_date');
             })
             ->sum('value_number');
+    }
+
+    /**
+     * Labor cost (value + percent of sales) for each individual business day
+     * within the range, e.g. week-to-date so far.
+     */
+    private function laborByDayForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end,
+        array $salesByDay
+    ): array {
+        $out = [];
+
+        for ($d = $start; $d->lte($end); $d = $d->addDay()) {
+            $value = $this->laborValueSumForRange($store, $d, $d);
+            $sales = (float) ($salesByDay[$d->toDateString()] ?? 0.0);
+
+            $out[$d->toDateString()] = [
+                'value' => round($value, 2),
+                'percent' => $this->percentOfSales($value, $sales),
+            ];
+        }
+
+        return $out;
     }
 
     private function percentOfSales(float $value, float $sales): float
