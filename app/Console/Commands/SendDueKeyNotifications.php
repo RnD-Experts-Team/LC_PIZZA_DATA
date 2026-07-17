@@ -3,10 +3,12 @@
 namespace App\Console\Commands;
 
 use App\Jobs\PublishOutboxEventJob;
+use App\Models\EnteredKeyValue;
 use App\Models\KeyStoreRule;
 use App\Models\UserStoreRole;
 use App\Services\DataEntry\ScheduleEvaluationService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use App\Services\DataEvents\DataEventFactory;
 use App\Services\DataEvents\DataOutboxService;
@@ -45,7 +47,9 @@ class SendDueKeyNotifications extends Command
             ->get();
 
         foreach ($rules as $rule) {
-            $isDue = $schedule->isMonthlyAnyDayRule($rule)
+            $isMonthlyAnyDay = $schedule->isMonthlyAnyDayRule($rule);
+
+            $isDue = $isMonthlyAnyDay
                 ? $schedule->monthlyIsApplicableThisMonth($rule, $today)
                 : $schedule->isDueOnDate($rule, $today);
 
@@ -55,8 +59,18 @@ class SendDueKeyNotifications extends Command
 
             $dueTimeForMessage = $rule->due_time ?? 'end of day';
 
-            DB::transaction(function () use ($rule, $today, $dueTimeForMessage, $now) {
+            DB::transaction(function () use ($rule, $today, $dueTimeForMessage, $now, $isMonthlyAnyDay) {
+                $filledUserIds = $this->getFilledUserIds($rule, $today, $isMonthlyAnyDay);
+
+                if ($rule->fill_mode === 'store_once' && $filledUserIds->isNotEmpty()) {
+                    return;
+                }
+
                 $userIds = $this->getTargetUserIds($rule);
+
+                if ($rule->fill_mode === 'role_each') {
+                    $userIds = $userIds->diff($filledUserIds)->values();
+                }
 
                 if ($userIds->isEmpty()) {
                     return;
@@ -119,6 +133,29 @@ class SendDueKeyNotifications extends Command
 
         return $query
             ->pluck('user_id')
+            ->unique()
+            ->values();
+    }
+
+    private function getFilledUserIds($rule, $today, bool $isMonthlyAnyDay): Collection
+    {
+        $query = EnteredKeyValue::query()
+            ->where('key_id', $rule->key_id)
+            ->where('store_id', $rule->store_id)
+            ->current();
+
+        if ($isMonthlyAnyDay) {
+            $query->whereBetween('entry_date', [
+                $today->copy()->startOfMonth()->toDateString(),
+                $today->copy()->endOfMonth()->toDateString(),
+            ]);
+        } else {
+            $query->whereDate('entry_date', $today);
+        }
+
+        return $query
+            ->pluck('user_id')
+            ->filter()
             ->unique()
             ->values();
     }
