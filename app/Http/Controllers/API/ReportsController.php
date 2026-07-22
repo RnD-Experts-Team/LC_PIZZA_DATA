@@ -1744,7 +1744,7 @@ class ReportsController extends Controller
             $case = 3;
         }
 
-        return [max(0.0, 35.0 - $deduction), $case];
+        return [max(0.0, 35.0 - $deduction * 100), $case];
     }
 
     /**
