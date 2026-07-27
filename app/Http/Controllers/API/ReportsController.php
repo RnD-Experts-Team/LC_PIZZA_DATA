@@ -50,10 +50,10 @@ class ReportsController extends Controller
         '406152'
     ];
 
-    private const PORTIONING_INGREDIENT_IDS = [
-        404, 3813, 1042, '4660/4621', 1103, 1515, '03', '02',
-        4943, 389, 1095, 476, 4759, 5858, 4659, 1612, 4342, 967, 4913,
-    ];
+    // private const PORTIONING_INGREDIENT_IDS = [
+    //     404, 3813, 1042, '4660/4621', 1103, 1515, '03', '02',
+    //     4943, 389, 1095, 476, 4759, 5858, 4659, 1612, 4342, 967, 4913,
+    // ];
     private const PORTIONING_DETAIL_IDS = [
         404, 3813, 1042, '4660/4621', 1515, 1103, '03', '02',
     ];
@@ -378,7 +378,6 @@ class ReportsController extends Controller
             ->fromSub($union, 'u')
             ->where('franchise_store', $store)
             ->where('count_period', 'W')
-            ->whereIn('ingredient_id', self::PORTIONING_INGREDIENT_IDS)
             ->groupBy('ingredient_id', 'ingredient_description')
             ->get([
                 'ingredient_id',
