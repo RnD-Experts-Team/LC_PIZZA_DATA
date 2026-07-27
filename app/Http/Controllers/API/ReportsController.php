@@ -382,7 +382,7 @@ class ReportsController extends Controller
             ->get([
                 'ingredient_id',
                 'ingredient_description',
-                DB::raw('SUM(theoretical_usage * ingredient_unit_cost) as theo_usage_value'),
+                DB::raw('SUM((theoretical_usage * ingredient_unit_cost) + ((actual_usage - theoretical_usage + variance_qty) * ingredient_unit_cost)) as theo_usage_value'),
                 DB::raw('SUM(variance_qty * ingredient_unit_cost) as variance_value'),
             ]);
 
