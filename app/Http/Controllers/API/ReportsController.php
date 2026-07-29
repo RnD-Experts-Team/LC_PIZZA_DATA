@@ -50,6 +50,14 @@ class ReportsController extends Controller
         '406152'
     ];
 
+    // private const PORTIONING_INGREDIENT_IDS = [
+    //     404, 3813, 1042, '4660/4621', 1103, 1515, '03', '02',
+    //     4943, 389, 1095, 476, 4759, 5858, 4659, 1612, 4342, 967, 4913,
+    // ];
+    private const PORTIONING_DETAIL_IDS = [
+        404, 3813, 1042, '4660/4621', 1515, 1103, '03', '02',
+    ];
+
     private const LABOR_ENTERED_KEY_ID = 23;
     // Starting 2026-07-07, labor is entered a day late under key 28 ("Yesterday's
     // Labor Cost"): the entry dated D holds the labor cost for business date D-1.
@@ -340,6 +348,74 @@ class ReportsController extends Controller
                 'current_week' => round($blueLineCurrent, 2),
                 'previous_week' => round($blueLinePrevious, 2),
             ]
+        ];
+    }
+
+    public function portioningReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildPortioningReport($store, $date));
+    }
+
+    private function buildPortioningReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $queries = DatabaseRouter::routedQueries(
+            'alta_inventory_ingredient_usage',
+            $weekStart->toMutable(),
+            $weekEnd->toMutable()
+        );
+
+        $union = array_shift($queries);
+        foreach ($queries as $q) {
+            $union->unionAll($q);
+        }
+
+        $rows = DB::query()
+            ->fromSub($union, 'u')
+            ->where('franchise_store', $store)
+            ->where('count_period', 'W')
+            ->groupBy('ingredient_id', 'ingredient_description')
+            ->get([
+                'ingredient_id',
+                'ingredient_description',
+                DB::raw('SUM((theoretical_usage * ingredient_unit_cost) + ((actual_usage - theoretical_usage + variance_qty) * ingredient_unit_cost)) as theo_usage_value'),
+                DB::raw('SUM(variance_qty * ingredient_unit_cost) as variance_value'),
+            ]);
+
+        $theoUsage = round((float) $rows->sum('theo_usage_value'), 2);
+
+        $detailIds = array_map('strval', self::PORTIONING_DETAIL_IDS);
+
+        $breakdown = $rows
+            ->filter(fn($row) => in_array((string) $row->ingredient_id, $detailIds, true))
+            ->map(function ($row) use ($theoUsage) {
+                $varianceValue = round((float) $row->variance_value, 2);
+
+                return [
+                    'ingredient_id' => $row->ingredient_id,
+                    'ingredient_description' => $row->ingredient_description,
+                    'variance_value' => $varianceValue,
+                    'percentage_of_theo_usage' => $theoUsage != 0.0
+                        ? round($varianceValue / $theoUsage * 100, 2)
+                        : 0.0,
+                ];
+            })
+            ->values()
+            ->toArray();
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+            ],
+            'theo_usage' => $theoUsage,
+            'variance_breakdown' => $breakdown,
         ];
     }
 
@@ -683,6 +759,7 @@ class ReportsController extends Controller
             'cleaning-review' => $this->buildCleaningReviewReport($store, $date),
             'customer-service' => $this->buildCustomerServiceReport($store, $date),
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
+            'portioning' => $this->buildPortioningReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
             'sales-history' => $this->buildSalesHistory($store, $date),
         ]);
