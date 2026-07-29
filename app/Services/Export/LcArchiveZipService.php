@@ -135,7 +135,7 @@ class LcArchiveZipService
         return match ($col['type']) {
             'decimal2' => $this->formatDecimal($value, 2),
             'decimal4' => $this->formatDecimal($value, 4),
-            'integer' => $value === null || $value === '' ? '' : (string) (int) $value,
+            'integer' => (string) (int) $value,
             'iso_datetime' => $this->formatIsoDateTime($value),
             'us_datetime' => $this->formatUsDateTime($value),
             'bool_yes_no' => $this->formatBoolYesNo($value),
@@ -145,11 +145,11 @@ class LcArchiveZipService
 
     protected function formatDecimal(mixed $value, int $decimals): string
     {
-        if ($value === null || $value === '') {
-            return '';
-        }
-
-        return number_format((float) $value, $decimals, '.', '');
+        // The real LC export never leaves a money/quantity field blank (it
+        // uses 0.0000), so a NULL/missing DB value is rendered as zero
+        // rather than an empty string, which some downstream importers
+        // reject as an invalid decimal literal under strict SQL mode.
+        return number_format((float) ($value ?? 0), $decimals, '.', '');
     }
 
     protected function formatIsoDateTime(mixed $value): string
