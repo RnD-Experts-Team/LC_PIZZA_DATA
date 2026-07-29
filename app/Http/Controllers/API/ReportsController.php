@@ -49,6 +49,7 @@ class ReportsController extends Controller
         // Add LTO item IDs here, e.g. '201234', '205678'
         '406152'
     ];
+    private const IMPORTANT_ITEMS_HNR_ITEM_IDS = ['103001', '101001', '103044', '105001', '201048'];
 
     // private const PORTIONING_INGREDIENT_IDS = [
     //     404, 3813, 1042, '4660/4621', 1103, 1515, '03', '02',
@@ -431,33 +432,56 @@ class ReportsController extends Controller
         $day = CarbonImmutable::parse($date)->startOfDay();
         [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
 
+        $effectiveWeek = $this->ordersVsSalesEffectiveWeek($store, $weekStart, $weekEnd);
+        $effectiveWeekStart = $effectiveWeek['start'];
+        $effectiveWeekEnd = $effectiveWeek['end'];
+
         return [
             'filtering' => [
                 'store' => $store,
                 'date' => $day->toDateString(),
                 'week_start' => $weekStart->toDateString(),
                 'week_end' => $weekEnd->toDateString(),
+                'data_week_start' => $effectiveWeekStart->toDateString(),
+                'data_week_end' => $effectiveWeekEnd->toDateString(),
+                'used_previous_week' => $effectiveWeek['used_previous_week'],
             ],
-            'current_week' => $this->ordersVsSalesPeriod($store, $weekStart, $weekEnd),
-            'four_weeks' => $this->ordersVsSalesPeriod($store, $weekStart->subWeeks(3), $weekEnd),
-            'twelve_weeks' => $this->ordersVsSalesPeriod($store, $weekStart->subWeeks(11), $weekEnd),
-            'six_months' => $this->ordersVsSalesPeriod($store, $weekStart->subMonths(6), $weekEnd),
+            'current_week' => $this->ordersVsSalesPeriod($store, $effectiveWeekStart, $effectiveWeekEnd),
+            'four_weeks' => $this->ordersVsSalesPeriod($store, $effectiveWeekStart->subWeeks(3), $effectiveWeekEnd),
+            'twelve_weeks' => $this->ordersVsSalesPeriod($store, $effectiveWeekStart->subWeeks(11), $effectiveWeekEnd),
+            'six_months' => $this->ordersVsSalesPeriod($store, $effectiveWeekStart->subMonths(6), $effectiveWeekEnd),
         ];
+    }
+
+    /**
+     * Business week to actually use for orders-vs-sales figures (report and
+     * score). If the current business week has no Blue Line and no Pepsi
+     * orders at all (e.g. this week's delivery hasn't landed yet), its data
+     * isn't in yet, so we fall back to the immediately prior week's data
+     * instead. Looks back one week only - if that's empty too, it's used
+     * as-is.
+     */
+    private function ordersVsSalesEffectiveWeek(string $store, CarbonImmutable $weekStart, CarbonImmutable $weekEnd): array
+    {
+        $key = "ordersVsSalesEffectiveWeek:{$store}:{$weekStart->toDateString()}:{$weekEnd->toDateString()}";
+
+        return $this->remember($key, function () use ($store, $weekStart, $weekEnd): array {
+            $hasData = $this->blueLineTotalForRange($store, $weekStart, $weekEnd) > 0.0
+                || $this->pepsiTotalForRange($store, $weekStart, $weekEnd) > 0.0;
+
+            if ($hasData) {
+                return ['start' => $weekStart, 'end' => $weekEnd, 'used_previous_week' => false];
+            }
+
+            return ['start' => $weekStart->subWeek(), 'end' => $weekEnd->subWeek(), 'used_previous_week' => true];
+        });
     }
 
     private function ordersVsSalesPeriod(string $store, CarbonImmutable $start, CarbonImmutable $end): array
     {
         $sales = $this->salesTotal($store, $start, $end);
-
-        $blueLine = (float) InventoryOrder::where('store_number', $store)
-            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
-            ->where('vendor_name', 'like', '%BLUE LINE%')
-            ->sum('invoice_total');
-
-        $pepsi = (float) InventoryOrder::where('store_number', $store)
-            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
-            ->where('vendor_name', 'like', '%PEPSI%')
-            ->sum('invoice_total');
+        $blueLine = $this->blueLineTotalForRange($store, $start, $end);
+        $pepsi = $this->pepsiTotalForRange($store, $start, $end);
 
         return [
             'sales' => round($sales, 2),
@@ -1236,6 +1260,9 @@ class ReportsController extends Controller
         $hourlySalesWeekToDateSum = $this->hourlySalesByChannelSum($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateTotals = $this->dailySummaryTotals($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateTotalsAvg = $this->averageWeekToDateTotals($weekToDateTotals, $weekToDateDayCount);
+        $importantItemsHnrDailyRows = $this->importantItemsHnrDailyRowsForRange($store, $weekToDateStart, $weekToDateEnd);
+        $importantItemsHnrWeekToDateTotals = $this->sumImportantItemsHnrRows($importantItemsHnrDailyRows);
+        $importantItemsHnrDayTotals = $this->importantItemsHnrRowForDay($importantItemsHnrDailyRows, $day);
         $weekToDateSalesTotals = $this->totalSalesByChannelForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateSalesTotalsAvg = $this->averageSalesByChannelTotals($weekToDateSalesTotals, $weekToDateDayCount);
         $weekToDateTopItems = $this->topItemsForRange($store, $weekToDateStart, $weekToDateEnd, 5, 'gross_sales');
@@ -1460,6 +1487,10 @@ class ReportsController extends Controller
                 'hnr_week_to_date' => $this->hnrTotals($weekToDateTotals),
                 'hnr_week_to_date_avg' => $this->hnrTotalsAverage($weekToDateTotals, $weekToDateDayCount),
 
+                'important_items_hnr' => $this->hnrTotals($importantItemsHnrDayTotals),
+                'important_items_hnr_week_to_date' => $this->hnrTotals($importantItemsHnrWeekToDateTotals),
+                'important_items_hnr_week_to_date_avg' => $this->hnrTotalsAverage($importantItemsHnrWeekToDateTotals, $weekToDateDayCount),
+
                 'upselling' => [
                     'day' => $upsellingDay,
                     'week_to_date' => $upsellingWeekToDate,
@@ -1555,6 +1586,10 @@ class ReportsController extends Controller
         // Per-day rows shared by the HnR and portal daily-mean calcs (one query).
         $dailyRows = $this->dailySummaryRowsForRange($store, $weekStart, $day);
 
+        $ordersVsSalesEffectiveWeek = $this->ordersVsSalesEffectiveWeek($store, $weekStart, $weekStart->addDays(6));
+        $ordersVsSalesEffectiveWeekStart = $ordersVsSalesEffectiveWeek['start'];
+        $ordersVsSalesEffectiveDay = $ordersVsSalesEffectiveWeek['used_previous_week'] ? $day->subWeek() : $day;
+
         $hours = $this->scoreHours(
             $store,
             $weekStart,
@@ -1575,16 +1610,16 @@ class ReportsController extends Controller
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['portal'])
             ),
             $this->scoreHnr(
-                $dailyRows,
+                $this->importantItemsHnrDailyRowsForRange($store, $weekStart, $day),
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
             ),
             $this->scoreTransferIn($store, $weekStart, $day),
             $this->scoreItemsTurnedOff($store, $weekStart, $day),
             $this->scoreOrdersVsSales(
                 $store,
-                $weekStart->subWeeks(3),
-                $day,
-                $this->salesTotal($store, $weekStart->subWeeks(3), $day),
+                $ordersVsSalesEffectiveWeekStart->subWeeks(3),
+                $ordersVsSalesEffectiveDay,
+                $this->salesTotal($store, $ordersVsSalesEffectiveWeekStart->subWeeks(3), $ordersVsSalesEffectiveDay),
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['orders_vs_sales'])
             ),
         ];
@@ -1905,6 +1940,8 @@ class ReportsController extends Controller
     /**
      * HnR category (max 10): mean of each day's promise-met % across days
      * with transactions, compared to the HnR goal. Only penalized below goal.
+     * Scored off the important-items HnR (see importantItemsHnrDailyRowsForRange()),
+     * not the store-wide HnR shown elsewhere in the report.
      */
     private function scoreHnr(array $dailyRows, ?float $goal): array
     {
@@ -2142,6 +2179,17 @@ class ReportsController extends Controller
         return $this->remember($key, fn(): float => (float) InventoryOrder::where('store_number', $store)
             ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
             ->where('vendor_name', 'like', '%BLUE LINE%')
+            ->sum('invoice_total'));
+    }
+
+    /** Pepsi invoice total for a store within the range (memoized). */
+    private function pepsiTotalForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): float
+    {
+        $key = "pepsiTotalForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn(): float => (float) InventoryOrder::where('store_number', $store)
+            ->whereBetween('delivery_date', [$start->toDateString(), $end->toDateString()])
+            ->where('vendor_name', 'like', '%PEPSI%')
             ->sum('invoice_total'));
     }
 
@@ -2886,15 +2934,7 @@ class ReportsController extends Controller
         CarbonImmutable $start,
         CarbonImmutable $end
     ): array {
-        $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
-
-        $union = array_shift($queries);
-        foreach ($queries as $q) {
-            $union->unionAll($q);
-        }
-
-        $row = DB::query()
-            ->fromSub($union, 'd')
+        $row = $this->detailOrdersSource($start, $end)
             ->where('franchise_store', $store)
             ->whereIn('order_placed_method', ['Website', 'Mobile'])
             ->selectRaw("
@@ -3157,6 +3197,19 @@ class ReportsController extends Controller
         return DB::query()->fromSub($union, 'ol');
     }
 
+    private function detailOrdersSource(CarbonImmutable $start, CarbonImmutable $end): Builder
+    {
+        $queries = DatabaseRouter::routedQueries('detail_orders', $start->toMutable(), $end->toMutable());
+
+        $union = array_shift($queries);
+        foreach ($queries as $q) {
+            $union->unionAll($q);
+        }
+
+        // Union hot + archive detail_orders tables for the requested range.
+        return DB::query()->fromSub($union, 'd');
+    }
+
     private function applyInStoreBucketFilters(Builder $query): Builder
     {
         return $query
@@ -3230,6 +3283,88 @@ class ReportsController extends Controller
         CarbonImmutable $end
     ): array {
         $totals = $this->dailySummaryTotals($store, $start, $end);
+        return $this->hnrTotals($totals);
+    }
+
+    // ---------------------------------------------------------------------
+    // Important-items HnR (raw, not present in any aggregated table)
+    //
+    // detail_orders (hnrOrder/broken_promise) is order-header level, with no
+    // item_id; order_line (item_id) has no hnr flags. So this joins the two
+    // raw tables directly: orders that contain one of the important items,
+    // matched to their hnrOrder/broken_promise flags, grouped per business
+    // day in a single query.
+    // ---------------------------------------------------------------------
+
+    /** Per-day important-items HnR counts for a store/range (memoized, one query). */
+    private function importantItemsHnrDailyRowsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $key = "importantItemsHnrDailyRows:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, fn(): array => $this->computeImportantItemsHnrDailyRowsForRange($store, $start, $end));
+    }
+
+    private function computeImportantItemsHnrDailyRowsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $importantOrders = $this->orderLineSource($start, $end)
+            ->where('franchise_store', $store)
+            ->whereIn('item_id', self::IMPORTANT_ITEMS_HNR_ITEM_IDS)
+            ->whereNotNull('order_id')
+            ->select('franchise_store', 'business_date', 'order_id')
+            ->distinct();
+
+        return $this->detailOrdersSource($start, $end)
+            ->where('d.franchise_store', $store)
+            ->where('d.hnrOrder', 'Yes')
+            ->joinSub($importantOrders, 'io', function ($join) {
+                $join->on('io.franchise_store', '=', 'd.franchise_store')
+                    ->on('io.business_date', '=', 'd.business_date')
+                    ->on('io.order_id', '=', 'd.order_id');
+            })
+            ->selectRaw(
+                'd.business_date as business_date,'
+                . ' COUNT(*) as hnr_transactions,'
+                . " SUM(CASE WHEN d.broken_promise = 'Yes' THEN 1 ELSE 0 END) as hnr_broken_promises"
+            )
+            ->groupBy('d.business_date')
+            ->orderBy('d.business_date')
+            ->get()
+            ->all();
+    }
+
+    /** Folds per-day important-items HnR rows into a hnrTotals()-compatible totals array. */
+    private function sumImportantItemsHnrRows(array $rows): array
+    {
+        $transactions = 0;
+        $broken = 0;
+
+        foreach ($rows as $row) {
+            $transactions += (int) ($row->hnr_transactions ?? 0);
+            $broken += (int) ($row->hnr_broken_promises ?? 0);
+        }
+
+        return ['hnr_transactions' => $transactions, 'hnr_broken_promises' => $broken];
+    }
+
+    /** Picks a single day's totals out of a per-day important-items HnR row set. */
+    private function importantItemsHnrRowForDay(array $rows, CarbonImmutable $day): array
+    {
+        foreach ($rows as $row) {
+            if (CarbonImmutable::parse($row->business_date)->isSameDay($day)) {
+                return [
+                    'hnr_transactions' => (int) $row->hnr_transactions,
+                    'hnr_broken_promises' => (int) $row->hnr_broken_promises,
+                ];
+            }
+        }
+
+        return ['hnr_transactions' => 0, 'hnr_broken_promises' => 0];
+    }
+
+    private function importantItemsHnrMetricsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $totals = $this->sumImportantItemsHnrRows($this->importantItemsHnrDailyRowsForRange($store, $start, $end));
+
         return $this->hnrTotals($totals);
     }
 
@@ -3461,6 +3596,7 @@ class ReportsController extends Controller
             'week_end' => $day->toDateString(),
             ...$this->portalMetricsForRange($store, $weekStart, $day),
             ...$this->hnrMetricsForRange($store, $weekStart, $day),
+            'important_items_hnr' => $this->importantItemsHnrMetricsForRange($store, $weekStart, $day),
         ];
 
         // 7 previous complete weeks
@@ -3472,6 +3608,7 @@ class ReportsController extends Controller
                 'week_end' => $end->toDateString(),
                 ...$this->portalMetricsForRange($store, $start, $end),
                 ...$this->hnrMetricsForRange($store, $start, $end),
+                'important_items_hnr' => $this->importantItemsHnrMetricsForRange($store, $start, $end),
             ];
         }
 
