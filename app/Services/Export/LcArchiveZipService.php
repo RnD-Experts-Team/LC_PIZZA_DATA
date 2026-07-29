@@ -12,10 +12,19 @@ use ZipArchive;
  * column formatting the LC gateway produces) from data already stored in our
  * database, instead of re-downloading it from the LC gateway.
  *
- * Only the 9 report types that are actually imported into a table are
- * covered (see getAvailableReports()). Daily-Projections, Detail-Transactions
- * and Summary-Toppings are not persisted anywhere and are intentionally
- * omitted.
+ * Covers the 9 report types from the daily LC zip that are imported into a
+ * table, plus the 3 "Alta" inventory reports (InventoryCOGS,
+ * InventoryPurchase-Orders, InventoryIngredient-Usage) which come from a
+ * separate Alta feed rather than the daily LC zip (see getAvailableReports()).
+ * Daily-Projections, Detail-Transactions and Summary-Toppings are not
+ * persisted anywhere and are intentionally omitted.
+ *
+ * The 9 LC-zip report definitions were verified byte-for-byte against a real
+ * downloaded zip. The 3 Alta report definitions were NOT verified against a
+ * real sample file (none was available) — their header names/order are
+ * reconstructed from the import processors' column mappings, cross-checked
+ * against the sibling LC_Pizza project's identical file-prefix/column-map
+ * conventions.
  */
 class LcArchiveZipService
 {
@@ -318,6 +327,83 @@ class LcArchiveZipService
                     ['header' => 'WasteReason', 'db' => 'waste_reason', 'type' => 'string'],
                     ['header' => 'UnitFoodCost', 'db' => 'unit_food_cost', 'type' => 'decimal2'],
                     ['header' => 'Qty', 'db' => 'qty', 'type' => 'decimal2'],
+                ],
+            ],
+            [
+                // NOTE: no real sample file existed for these 3 "Alta" inventory
+                // reports (they come from a separate Alta feed, unlike the other
+                // 9 which were verified byte-for-byte against a real LC zip).
+                // Header names/order are reconstructed from AltaInventoryCogsProcessor's
+                // column mapping and cross-checked against the sibling LC_Pizza
+                // project's ProcessCsvServices, which uses the identical file
+                // prefix ("InventoryCOGS") and column map.
+                'label' => 'InventoryCOGS',
+                'table' => 'alta_inventory_cogs',
+                'orderBy' => ['franchise_store', 'business_date', 'count_period', 'inventory_category'],
+                'columns' => [
+                    ['header' => 'FranchiseStore', 'db' => 'franchise_store', 'type' => 'string'],
+                    ['header' => 'BusinessDate', 'db' => 'business_date', 'type' => 'string'],
+                    ['header' => 'CountPeriod', 'db' => 'count_period', 'type' => 'string'],
+                    ['header' => 'InventoryCategory', 'db' => 'inventory_category', 'type' => 'string'],
+                    ['header' => 'StartingValue', 'db' => 'starting_value', 'type' => 'decimal2'],
+                    ['header' => 'ReceivedValue', 'db' => 'received_value', 'type' => 'decimal2'],
+                    ['header' => 'NetTransferValue', 'db' => 'net_transfer_value', 'type' => 'decimal2'],
+                    ['header' => 'EndingValue', 'db' => 'ending_value', 'type' => 'decimal2'],
+                    ['header' => 'UsedValue', 'db' => 'used_value', 'type' => 'decimal2'],
+                    ['header' => 'TheoreticalUsageValue', 'db' => 'theoretical_usage_value', 'type' => 'decimal2'],
+                    ['header' => 'VarianceValue', 'db' => 'variance_value', 'type' => 'decimal2'],
+                ],
+            ],
+            [
+                // NOTE: same caveat as InventoryCOGS above — reconstructed from
+                // AltaInventoryIngredientOrdersProcessor + LC_Pizza's
+                // "InventoryPurchase-Orders" prefix/column map, not verified
+                // against a real sample file.
+                'label' => 'InventoryPurchase-Orders',
+                'table' => 'alta_inventory_ingredient_orders',
+                'orderBy' => ['franchise_store', 'business_date', 'supplier', 'invoice_number', 'purchase_order_number', 'ingredient_id'],
+                'columns' => [
+                    ['header' => 'FranchiseStore', 'db' => 'franchise_store', 'type' => 'string'],
+                    ['header' => 'BusinessDate', 'db' => 'business_date', 'type' => 'string'],
+                    ['header' => 'Supplier', 'db' => 'supplier', 'type' => 'string'],
+                    ['header' => 'InvoiceNumber', 'db' => 'invoice_number', 'type' => 'string'],
+                    ['header' => 'PurchaseOrderNumber', 'db' => 'purchase_order_number', 'type' => 'string'],
+                    ['header' => 'IngredientId', 'db' => 'ingredient_id', 'type' => 'string'],
+                    ['header' => 'IngredientDescription', 'db' => 'ingredient_description', 'type' => 'string'],
+                    ['header' => 'IngredientCategory', 'db' => 'ingredient_category', 'type' => 'string'],
+                    ['header' => 'IngredientUnit', 'db' => 'ingredient_unit', 'type' => 'string'],
+                    ['header' => 'UnitPrice', 'db' => 'unit_price', 'type' => 'decimal2'],
+                    ['header' => 'OrderQty', 'db' => 'order_qty', 'type' => 'decimal2'],
+                    ['header' => 'SentQty', 'db' => 'sent_qty', 'type' => 'decimal2'],
+                    ['header' => 'ReceivedQty', 'db' => 'received_qty', 'type' => 'decimal2'],
+                    ['header' => 'TotalCost', 'db' => 'total_cost', 'type' => 'decimal2'],
+                ],
+            ],
+            [
+                // NOTE: same caveat as InventoryCOGS above — reconstructed from
+                // AltaInventoryIngredientUsageProcessor + LC_Pizza's
+                // "InventoryIngredient-Usage" prefix/column map, not verified
+                // against a real sample file.
+                'label' => 'InventoryIngredient-Usage',
+                'table' => 'alta_inventory_ingredient_usage',
+                'orderBy' => ['franchise_store', 'business_date', 'count_period', 'ingredient_id'],
+                'columns' => [
+                    ['header' => 'FranchiseStore', 'db' => 'franchise_store', 'type' => 'string'],
+                    ['header' => 'BusinessDate', 'db' => 'business_date', 'type' => 'string'],
+                    ['header' => 'CountPeriod', 'db' => 'count_period', 'type' => 'string'],
+                    ['header' => 'IngredientId', 'db' => 'ingredient_id', 'type' => 'string'],
+                    ['header' => 'IngredientDescription', 'db' => 'ingredient_description', 'type' => 'string'],
+                    ['header' => 'IngredientCategory', 'db' => 'ingredient_category', 'type' => 'string'],
+                    ['header' => 'IngredientUnit', 'db' => 'ingredient_unit', 'type' => 'string'],
+                    ['header' => 'IngredientUnitCost', 'db' => 'ingredient_unit_cost', 'type' => 'decimal2'],
+                    ['header' => 'StartingInventoryQty', 'db' => 'starting_inventory_qty', 'type' => 'decimal2'],
+                    ['header' => 'ReceivedQty', 'db' => 'received_qty', 'type' => 'decimal2'],
+                    ['header' => 'NetTransferredQty', 'db' => 'net_transferred_qty', 'type' => 'decimal2'],
+                    ['header' => 'EndingInventoryQty', 'db' => 'ending_inventory_qty', 'type' => 'decimal2'],
+                    ['header' => 'ActualUsage', 'db' => 'actual_usage', 'type' => 'decimal2'],
+                    ['header' => 'TheoreticalUsage', 'db' => 'theoretical_usage', 'type' => 'decimal2'],
+                    ['header' => 'VarianceQty', 'db' => 'variance_qty', 'type' => 'decimal2'],
+                    ['header' => 'WasteQty', 'db' => 'waste_qty', 'type' => 'decimal2'],
                 ],
             ],
             [
