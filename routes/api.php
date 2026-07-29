@@ -17,6 +17,7 @@ use App\Http\Controllers\API\{
     InventoryController,
     CleaningReviewController,
     PricingKpiController,
+    LcArchiveExportController,
 };
 
 
@@ -54,6 +55,7 @@ Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class,
 Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'portioningReport'])->middleware('auth.token.store');
 Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware('auth.token.store');
 Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware('auth.secret.key');
+Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware('auth.token.store');
 
 Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
