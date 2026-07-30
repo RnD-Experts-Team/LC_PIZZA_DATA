@@ -8,6 +8,7 @@ use App\Services\DataEntry\DueKeyResolverService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use App\Models\Employee;
+use App\Models\EmployeeDebriefType;
 class DueController extends Controller
 {
     public function __construct(
@@ -33,6 +34,7 @@ class DueController extends Controller
             'date' => $date,
             'items' => $items,
             'employees' => Employee::where('store_id', $store_id)->where('active', true)->get(),
+            'employee_debrief_types' => EmployeeDebriefType::all(['id', 'slug', 'label']),
         ]);
     }
 

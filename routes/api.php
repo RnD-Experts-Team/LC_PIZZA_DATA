@@ -10,6 +10,7 @@ use App\Http\Controllers\API\{
     ValueController,
     ManualCsvImportController,
     EmployeeDebriefController,
+    EmployeeDebriefTypeController,
     TagController,
     GoalMetricController,
     GoalController,
@@ -108,6 +109,8 @@ Route::prefix('stores/{store_id}/employee-debriefs')->middleware('auth.token.sto
     Route::get('range', [EmployeeDebriefController::class, 'range']);
 
     Route::get('employee/{employee_id}', [EmployeeDebriefController::class, 'byEmployee']);
+
+    Route::get('types', [EmployeeDebriefTypeController::class, 'index']);
 
     Route::post('/', [EmployeeDebriefController::class, 'store']);
 
