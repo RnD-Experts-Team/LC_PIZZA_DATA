@@ -138,15 +138,61 @@ class EmployeeDebriefController extends Controller
 
         $paginated = filter_var($request->query('paginated', true), FILTER_VALIDATE_BOOLEAN);
 
+        $typeSummary = $this->employeeDebriefTypeSummary($store_id, (int) $employee_id);
+
         if (!$paginated) {
-            return response()->json($q->get());
+            return response()->json([
+                'data' => $q->get(),
+                'type_summary' => $typeSummary,
+            ]);
         }
 
         $perPage = (int) $request->query('per_page', 50);
 
-        return response()->json(
-            $q->paginate($perPage)
-        );
+        return response()->json(array_merge(
+            $q->paginate($perPage)->toArray(),
+            ['type_summary' => $typeSummary]
+        ));
+    }
+
+    /**
+     * Per-type breakdown for one employee: all-time count and weekly average.
+     * Weeks run Tuesday through Monday, counted from the employee's first ever
+     * debrief through the current week.
+     *
+     * @return array<int, array{type: array|null, total_count: int, weekly_average: float}>
+     */
+    private function employeeDebriefTypeSummary(string $store_id, int $employee_id): array
+    {
+        $debriefsQuery = fn () => EmployeeDebrief::query()
+            ->where('store_id', $store_id)
+            ->where('employee_id', $employee_id);
+
+        $firstDate = $debriefsQuery()->min('date');
+
+        if (!$firstDate) {
+            return [];
+        }
+
+        $weeksElapsed = Carbon::parse($firstDate)->startOfWeek(Carbon::TUESDAY)
+            ->diffInWeeks(Carbon::now()->startOfWeek(Carbon::TUESDAY)) + 1;
+
+        $counts = $debriefsQuery()
+            ->selectRaw('type_id, COUNT(*) as total_count')
+            ->groupBy('type_id')
+            ->pluck('total_count', 'type_id');
+
+        $types = EmployeeDebriefType::whereIn('id', $counts->keys()->filter())
+            ->get()
+            ->keyBy('id');
+
+        return $counts->map(function ($count, $typeId) use ($types, $weeksElapsed) {
+            return [
+                'type' => $typeId ? $types->get((int) $typeId)?->only(['id', 'slug', 'label']) : null,
+                'total_count' => (int) $count,
+                'weekly_average' => round($count / $weeksElapsed, 2),
+            ];
+        })->values()->all();
     }
 
     /**
