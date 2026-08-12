@@ -45,6 +45,18 @@ class ReportsController extends Controller
         '201128' => 'EMB Cheese',
         '201106' => 'EMB Pepperoni',
     ];
+    /** Points per unit for the weighted upselling score. */
+    private const UPSELLING_SCORE_WEIGHTS = [
+        'wings' => 2.25,
+        'crazy_bread' => 2.25,
+        'bev_2l' => 2.20,
+        'cookies' => 2.15,
+        'bev_20oz' => 1.8,
+        'italian_cheese_bread' => 1.5,
+        'EMB Pepperoni' => 0.7,
+        'EMB Cheese' => 0.6,
+        'sauce' => 0.6,
+    ];
     private const LTO_ITEM_IDS = [
         // Add LTO item IDs here, e.g. '201234', '205678'
         '406152'
@@ -1312,6 +1324,11 @@ class ReportsController extends Controller
         $totalUpsellingDay = $this->totalUpsellingUnits($upsellingDay);
         $totalUpsellingWeekToDate = $this->totalUpsellingUnits($upsellingWeekToDate);
 
+        $upsellingScoreDay = $this->upsellingScoreForItems($upsellingDay);
+        $upsellingScoreWeekToDate = $this->upsellingScoreForItems($upsellingWeekToDate);
+        $totalUpsellingScoreDay = $this->totalUpsellingScore($upsellingScoreDay);
+        $totalUpsellingScoreWeekToDate = $this->totalUpsellingScore($upsellingScoreWeekToDate);
+
         $totalSales = [
             'royalty_obligation' => 0,
             'phone_sales' => 0,
@@ -1496,6 +1513,13 @@ class ReportsController extends Controller
                     'week_to_date' => $upsellingWeekToDate,
                     'total_upselling_day' => $totalUpsellingDay,
                     'total_upselling_week_to_date' => $totalUpsellingWeekToDate,
+                ],
+
+                'upselling_score' => [
+                    'day' => $upsellingScoreDay,
+                    'week_to_date' => $upsellingScoreWeekToDate,
+                    'total_upselling_score_day' => $totalUpsellingScoreDay,
+                    'total_upselling_score_week_to_date' => $totalUpsellingScoreWeekToDate,
                 ],
 
                 'labor' => $laborPercent,
@@ -3112,6 +3136,24 @@ class ReportsController extends Controller
         }
 
         return $total;
+    }
+
+    /** Weighted points per item (units * weight) for the same items totalUpsellingUnits() counts. */
+    private function upsellingScoreForItems(array $upselling): array
+    {
+        $scores = [];
+
+        foreach (self::UPSELLING_SCORE_WEIGHTS as $key => $weight) {
+            $units = (int) ($upselling[$key] ?? 0);
+            $scores[$key] = round($units * $weight, 2);
+        }
+
+        return $scores;
+    }
+
+    private function totalUpsellingScore(array $upsellingScore): float
+    {
+        return round(array_sum($upsellingScore), 2);
     }
 
     private function soldWithPizzaUnitsForRange(string $store, CarbonImmutable $start, CarbonImmutable $end): array
