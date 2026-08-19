@@ -13,16 +13,18 @@ class EmployeeDebrief extends Model
         'store_id',
         'user_id',
         'employee_id',
+        'type_id',
         'note',
         'date'
     ];
 
     protected $casts = [
         'employee_id' => 'integer',
+        'type_id' => 'integer',
         'date' => 'date'
     ];
 
-    protected $with = ['attachments'];
+    protected $with = ['attachments', 'type'];
 
     public function author(): BelongsTo
     {
@@ -32,6 +34,11 @@ class EmployeeDebrief extends Model
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'employee_id');
+    }
+
+    public function type(): BelongsTo
+    {
+        return $this->belongsTo(EmployeeDebriefType::class, 'type_id');
     }
 
     public function attachments(): HasMany

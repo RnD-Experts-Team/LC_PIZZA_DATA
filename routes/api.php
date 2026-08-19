@@ -4,12 +4,14 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\{
     ExportingController,
     ReportsController,
+    EmployeeReportController,
     DueController,
     KeyController,
     KeyRuleController,
     ValueController,
     ManualCsvImportController,
     EmployeeDebriefController,
+    EmployeeDebriefTypeController,
     TagController,
     GoalMetricController,
     GoalController,
@@ -54,6 +56,12 @@ Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToRepo
 Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class, 'cleaningReviewReport'])->middleware('auth.token.store');
 Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'portioningReport'])->middleware('auth.token.store');
 Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware('auth.token.store');
+
+// Employee report: store-wide roster + debrief activity (counts per debrief
+// type) for the business week containing {date}, plus trailing-week trend.
+// Override the trend window with ?trend_weeks= (default 6, max 12).
+Route::get('/reports/employees/{store}/{date}', [EmployeeReportController::class, 'show'])->middleware('auth.token.store');
+
 Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware('auth.secret.key');
 Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware('auth.token.store');
 
@@ -108,6 +116,8 @@ Route::prefix('stores/{store_id}/employee-debriefs')->middleware('auth.token.sto
     Route::get('range', [EmployeeDebriefController::class, 'range']);
 
     Route::get('employee/{employee_id}', [EmployeeDebriefController::class, 'byEmployee']);
+
+    Route::get('types', [EmployeeDebriefTypeController::class, 'index']);
 
     Route::post('/', [EmployeeDebriefController::class, 'store']);
 

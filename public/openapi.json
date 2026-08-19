@@ -167,6 +167,15 @@
                         "type": "integer",
                         "description": "Employee referenced by the note"
                     },
+                    "type_id": {
+                        "type": "integer",
+                        "nullable": true,
+                        "description": "References an EmployeeDebriefType. Null means this is a normal debrief."
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/EmployeeDebriefType",
+                        "nullable": true
+                    },
                     "note": {
                         "type": "string"
                     },
@@ -204,11 +213,35 @@
                 ]
             },
 
+            "EmployeeDebriefType": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "Stable machine key, e.g. call_off, no_call_no_show"
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Human-readable display name, e.g. Call Off"
+                    }
+                },
+                "required": ["id", "slug", "label"]
+            },
+
             "EmployeeDebriefCreate": {
                 "type": "object",
                 "properties": {
                     "employee_id": {
                         "type": "integer"
+                    },
+                    "type": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "Slug of an EmployeeDebriefType (e.g. call_off, no_call_no_show). Omit for a normal debrief."
                     },
                     "note": {
                         "type": "string",
@@ -1112,9 +1145,13 @@
                     "employees": {
                         "type": "array",
                         "items": { "$ref": "#/components/schemas/Employee" }
+                    },
+                    "employee_debrief_types": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/EmployeeDebriefType" }
                     }
                 },
-                "required": ["store_id", "date", "items", "employees"]
+                "required": ["store_id", "date", "items", "employees", "employee_debrief_types"]
             },
             "DueRangeDay": {
                 "type": "array",
@@ -3696,6 +3733,41 @@
                                 "schema": {
                                     "type": "object",
                                     "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stores/{store_id}/employee-debriefs/types": {
+            "get": {
+                "tags": ["Employee Debriefs"],
+                "summary": "List available employee debrief types",
+                "operationId": "listEmployeeDebriefTypes",
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "store_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Available employee debrief types (not store-specific)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/EmployeeDebriefType"
+                                    }
                                 }
                             }
                         }

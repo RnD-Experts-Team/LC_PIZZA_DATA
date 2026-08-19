@@ -271,15 +271,15 @@ class RunAggregationRebuildJob implements ShouldQueue
     protected function buildDailyUnits(Carbon $start, Carbon $end, string $stage): array
     {
         $units = [];
-        $current = $start->copy();
+        $current = $end->copy();
 
-        while ($current <= $end) {
+        while ($current >= $start) {
             $units[] = [
                 'stage' => $stage,
                 'date' => $current->toDateString(),
                 'label' => "{$stage}:{$current->toDateString()}",
             ];
-            $current->addDay();
+            $current->subDay();
         }
 
         return $units;

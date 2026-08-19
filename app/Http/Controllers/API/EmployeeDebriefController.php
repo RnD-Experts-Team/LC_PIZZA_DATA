@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\DataEntry\EmployeeDebriefRangeRequest;
 use App\Models\EmployeeDebrief;
+use App\Models\EmployeeDebriefType;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -137,15 +138,61 @@ class EmployeeDebriefController extends Controller
 
         $paginated = filter_var($request->query('paginated', true), FILTER_VALIDATE_BOOLEAN);
 
+        $typeSummary = $this->employeeDebriefTypeSummary($store_id, (int) $employee_id);
+
         if (!$paginated) {
-            return response()->json($q->get());
+            return response()->json([
+                'data' => $q->get(),
+                'type_summary' => $typeSummary,
+            ]);
         }
 
         $perPage = (int) $request->query('per_page', 50);
 
-        return response()->json(
-            $q->paginate($perPage)
-        );
+        return response()->json(array_merge(
+            $q->paginate($perPage)->toArray(),
+            ['type_summary' => $typeSummary]
+        ));
+    }
+
+    /**
+     * Per-type breakdown for one employee: all-time count and weekly average.
+     * Weeks run Tuesday through Monday, counted from the employee's first ever
+     * debrief through the current week.
+     *
+     * @return array<int, array{type: array|null, total_count: int, weekly_average: float}>
+     */
+    private function employeeDebriefTypeSummary(string $store_id, int $employee_id): array
+    {
+        $debriefsQuery = fn () => EmployeeDebrief::query()
+            ->where('store_id', $store_id)
+            ->where('employee_id', $employee_id);
+
+        $firstDate = $debriefsQuery()->min('date');
+
+        if (!$firstDate) {
+            return [];
+        }
+
+        $weeksElapsed = Carbon::parse($firstDate)->startOfWeek(Carbon::TUESDAY)
+            ->diffInWeeks(Carbon::now()->startOfWeek(Carbon::TUESDAY)) + 1;
+
+        $counts = $debriefsQuery()
+            ->selectRaw('type_id, COUNT(*) as total_count')
+            ->groupBy('type_id')
+            ->pluck('total_count', 'type_id');
+
+        $types = EmployeeDebriefType::whereIn('id', $counts->keys()->filter())
+            ->get()
+            ->keyBy('id');
+
+        return $counts->map(function ($count, $typeId) use ($types, $weeksElapsed) {
+            return [
+                'type' => $typeId ? $types->get((int) $typeId)?->only(['id', 'slug', 'label']) : null,
+                'total_count' => (int) $count,
+                'weekly_average' => round($count / $weeksElapsed, 2),
+            ];
+        })->values()->all();
     }
 
     /**
@@ -160,6 +207,7 @@ class EmployeeDebriefController extends Controller
                 'integer',
                 Rule::exists('employees', 'id')->where(fn($query) => $query->where('store_id', $store_id)),
             ],
+            'type' => ['nullable', 'string', Rule::exists('employee_debrief_types', 'slug')],
             'note' => 'required|string|max:5000',
             'date' => 'required|date_format:Y-m-d',
             'attachments' => 'sometimes|array',
@@ -168,6 +216,10 @@ class EmployeeDebriefController extends Controller
 
         $user = $request->user();
 
+        $typeId = isset($data['type'])
+            ? EmployeeDebriefType::where('slug', $data['type'])->value('id')
+            : null;
+
         $debrief = EmployeeDebrief::create([
 
             'store_id' => $store_id,
@@ -175,6 +227,8 @@ class EmployeeDebriefController extends Controller
             'user_id' => $user->id,
 
             'employee_id' => $data['employee_id'],
+
+            'type_id' => $typeId,
 
             'note' => $data['note'],
 
@@ -240,6 +294,7 @@ class EmployeeDebriefController extends Controller
                 'integer',
                 Rule::exists('employees', 'id')->where(fn($query) => $query->where('store_id', $store_id)),
             ],
+            'debriefs.*.type' => ['nullable', 'string', Rule::exists('employee_debrief_types', 'slug')],
             'debriefs.*.note' => 'required|string|max:5000',
             'debriefs.*.date' => 'required|date_format:Y-m-d',
             'debriefs.*.attachments' => 'sometimes|array',
@@ -252,10 +307,15 @@ class EmployeeDebriefController extends Controller
             $out = [];
 
             foreach ($data['debriefs'] as $index => $item) {
+                $typeId = isset($item['type'])
+                    ? EmployeeDebriefType::where('slug', $item['type'])->value('id')
+                    : null;
+
                 $debrief = EmployeeDebrief::create([
                     'store_id' => $store_id,
                     'user_id' => $user->id,
                     'employee_id' => $item['employee_id'],
+                    'type_id' => $typeId,
                     'note' => $item['note'],
                     'date' => $item['date'],
                 ]);
