@@ -97,7 +97,7 @@ class ValidateDataCommand extends Command
 
     protected function checkRowCounts(Carbon $date): void
     {
-        $tables = ['detail_orders', 'order_line', 'summary_sales'];
+        $tables = ['detail_orders', 'order_line', 'detail_transactions', 'summary_sales'];
 
         foreach ($tables as $table) {
             $hotCount = DB::connection('operational')

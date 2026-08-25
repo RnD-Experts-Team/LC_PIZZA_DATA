@@ -230,6 +230,42 @@ abstract class BaseTableProcessor
             ->delete();
     }
 
+    /**
+     * Partitions already cleared by this processor instance during the current
+     * import run (see deletePartitionOnce()).
+     */
+    protected array $clearedPartitions = [];
+
+    /**
+     * Delete a (franchise_store, business_date) partition, but only the first
+     * time it's seen by this processor instance.
+     *
+     * A single manual-upload job streams a CSV in fixed-size row chunks and
+     * calls process() once per chunk (see ProcessCsvImportJob::streamCsvOptimized()),
+     * reusing the same processor instance across all of them. A REPLACE-strategy
+     * processor that unconditionally deletes-then-inserts on every call would
+     * wipe out the rows a prior chunk just inserted for the same partition,
+     * leaving only whichever chunk happened to touch that partition last. The
+     * automated daily import (LCReportDataService) calls process() exactly once
+     * per file, so it's unaffected either way.
+     */
+    protected function deletePartitionOnce(string $connection, string $tableName, string $store, string $date): void
+    {
+        $key = $tableName . '|' . $store . '|' . $date;
+
+        if (isset($this->clearedPartitions[$key])) {
+            return;
+        }
+
+        DB::connection($connection)
+            ->table($tableName)
+            ->where('franchise_store', $store)
+            ->where('business_date', $date)
+            ->delete();
+
+        $this->clearedPartitions[$key] = true;
+    }
+
     // ========== HELPER METHODS ==========
 
     protected function parseDateTime(?string $datetime): ?string

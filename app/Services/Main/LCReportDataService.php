@@ -12,6 +12,7 @@ use App\Services\Aggregation\AggregationService;
 use App\Services\Import\Processors\{
     DetailOrdersProcessor,
     OrderLineProcessor,
+    DetailTransactionsProcessor,
     SummarySalesProcessor,
     SummaryItemsProcessor,
     SummaryTransactionsProcessor,
@@ -40,6 +41,7 @@ class LCReportDataService
     protected array $processorMap = [
         'detail-orders' => DetailOrdersProcessor::class,
         'detail-orderlines' => OrderLineProcessor::class,
+        'detail-transactions' => DetailTransactionsProcessor::class,
         'summary-sales' => SummarySalesProcessor::class,
         'summary-items' => SummaryItemsProcessor::class,
         'summary-transactions' => SummaryTransactionsProcessor::class,

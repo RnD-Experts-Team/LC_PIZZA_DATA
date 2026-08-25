@@ -977,6 +977,7 @@
     const processorMeta = {
         detail_orders: { icon: "fa-clipboard-list", hint: "Order headers & core details" },
         order_lines: { icon: "fa-list-check", hint: "Order line items (items / modifiers)" },
+        detail_transactions: { icon: "fa-money-check-dollar", hint: "Payment/tender detail per order" },
         summary_sales: { icon: "fa-chart-line", hint: "Sales totals & KPIs (summary)" },
         summary_items: { icon: "fa-box", hint: "Item performance (summary)" },
         summary_transactions: { icon: "fa-receipt", hint: "Transactions summary (payments / totals)" },

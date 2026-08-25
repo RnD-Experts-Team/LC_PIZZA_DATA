@@ -21,6 +21,7 @@ class PartitionStatsCommand extends Command
     protected array $tables = [
         'detail_orders',
         'order_line',
+        'detail_transactions',
         'summary_sales',
         'summary_items',
         'summary_transactions',

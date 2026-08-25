@@ -5,16 +5,18 @@ namespace App\Services\Import\Processors;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
-class OrderLineProcessor extends BaseTableProcessor
+class DetailTransactionsProcessor extends BaseTableProcessor
 {
     protected function getTableName(): string
     {
-        return 'order_line';
+        return 'detail_transactions';
     }
 
     /**
      * Match source-of-truth behavior:
      * replace per (franchise_store, business_date) partition, then insert all rows.
+     * (Multiple tenders can be applied to the same order, so there is no single
+     * column guaranteeing per-row uniqueness for an UPSERT.)
      */
     protected function getImportStrategy(): string
     {
@@ -26,52 +28,48 @@ class OrderLineProcessor extends BaseTableProcessor
         return [
             'franchise_store',
             'business_date',
-            'order_id',
-            'item_id',
             'date_time_placed',
             'date_time_fulfilled',
-            'menu_item_name',
-            'menu_item_account',
-            'bundle_name',
-            'net_amount',
-            'quantity',
-            'royalty_item',
-            'taxable_item',
-            'tax_included_amount',
+            'transaction_date_time',
+            'tendered_amount',
+            'payment_method',
+            'order_id',
+            'sub_payment_method',
+            'refund',
             'employee',
             'override_approval_employee',
             'order_placed_method',
             'order_fulfilled_method',
-            'modified_order_amount',
-            'modification_reason',
-            'payment_methods',
-            'refunded',
+            'po_number',
+            'po_entity_name',
+            'user_id',
+            'terminal_payment_made',
+            'card_last4',
+            'saf_transaction',
         ];
     }
 
     protected function getColumnMapping(): array
     {
         return array_merge(parent::getColumnMapping(), [
-            'orderid' => 'order_id',
-            'itemid' => 'item_id',
             'datetimeplaced' => 'date_time_placed',
             'datetimefulfilled' => 'date_time_fulfilled',
-            'menuitemname' => 'menu_item_name',
-            'menuitemaccount' => 'menu_item_account',
-            'bundlename' => 'bundle_name',
-            'netamount' => 'net_amount',
-            'quantity' => 'quantity',
-            'royaltyitem' => 'royalty_item',
-            'taxableitem' => 'taxable_item',
-            'taxincludedamount' => 'tax_included_amount',
+            'transactiondatetime' => 'transaction_date_time',
+            'tenderedamount' => 'tendered_amount',
+            'paymentmethod' => 'payment_method',
+            'orderid' => 'order_id',
+            'subpaymentmethod' => 'sub_payment_method',
+            'refund' => 'refund',
             'employee' => 'employee',
             'overrideapprovalemployee' => 'override_approval_employee',
             'orderplacedmethod' => 'order_placed_method',
             'orderfulfilledmethod' => 'order_fulfilled_method',
-            'modifiedorderamount' => 'modified_order_amount',
-            'modificationreason' => 'modification_reason',
-            'paymentmethods' => 'payment_methods',
-            'refunded' => 'refunded',
+            'ponumber' => 'po_number',
+            'poentityname' => 'po_entity_name',
+            'userid' => 'user_id',
+            'terminalpaymentmade' => 'terminal_payment_made',
+            'cardlast4' => 'card_last4',
+            'saftransaction' => 'saf_transaction',
         ]);
     }
 
@@ -79,17 +77,15 @@ class OrderLineProcessor extends BaseTableProcessor
     {
         $row['date_time_placed'] = $this->parseDateTime($row['date_time_placed'] ?? null);
         $row['date_time_fulfilled'] = $this->parseDateTime($row['date_time_fulfilled'] ?? null);
-        $row['net_amount'] = $this->toNumeric($row['net_amount'] ?? null);
-        $row['quantity'] = $this->toNumeric($row['quantity'] ?? null);
-        $row['tax_included_amount'] = $this->toNumeric($row['tax_included_amount'] ?? null);
-        $row['modified_order_amount'] = $this->toNumeric($row['modified_order_amount'] ?? null);
+        $row['transaction_date_time'] = $this->parseDateTime($row['transaction_date_time'] ?? null);
+        $row['tendered_amount'] = $this->toNumeric($row['tendered_amount'] ?? null);
 
         return $row;
     }
 
     /**
      * Override import execution so REPLACE happens per partition:
-     * (franchise_store, business_date) exactly like replaceOrderLinePartitionKeepAll()
+     * (franchise_store, business_date) exactly like OrderLineProcessor.
      */
     protected function executeImport(
         array $data,
@@ -106,7 +102,7 @@ class OrderLineProcessor extends BaseTableProcessor
 
             if ($store === '' || $date === '') {
                 // If these are missing, inserting would be dangerous; skip + log
-                Log::warning("OrderLine row missing partition keys; skipping", [
+                Log::warning("DetailTransactions row missing partition keys; skipping", [
                     'table' => $tableName,
                     'franchise_store' => $r['franchise_store'] ?? null,
                     'business_date' => $r['business_date'] ?? null,

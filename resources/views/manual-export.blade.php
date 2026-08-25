@@ -367,6 +367,7 @@
                         <!-- Add your model options here -->
                         <option value="detail_orders">Detail Orders</option>
                         <option value="order_line">Order Line</option>
+                        <option value="detail_transactions">Detail Transactions</option>
                         <option value="summary_sales">Summary Sales</option>
                         <option value="summary_items">Summary Items</option>
                         <option value="summary_transactions">Summary Transactions</option>

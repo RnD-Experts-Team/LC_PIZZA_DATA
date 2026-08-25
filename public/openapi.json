@@ -1507,6 +1507,7 @@
                         "properties": {
                             "detail_orders": { "type": "string" },
                             "order_lines": { "type": "string" },
+                            "detail_transactions": { "type": "string" },
                             "summary_sales": { "type": "string" },
                             "summary_items": { "type": "string" },
                             "summary_transactions": { "type": "string" },
@@ -1521,6 +1522,7 @@
                         "required": [
                             "detail_orders",
                             "order_lines",
+                            "detail_transactions",
                             "summary_sales",
                             "summary_items",
                             "summary_transactions",
@@ -1861,6 +1863,7 @@
                             "enum": [
                                 "detail_orders",
                                 "order_line",
+                                "detail_transactions",
                                 "summary_sales",
                                 "summary_items",
                                 "summary_transactions",
@@ -1959,6 +1962,7 @@
                             "enum": [
                                 "detail_orders",
                                 "order_line",
+                                "detail_transactions",
                                 "summary_sales",
                                 "summary_items",
                                 "summary_transactions",
