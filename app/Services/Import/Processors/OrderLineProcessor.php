@@ -136,12 +136,12 @@ class OrderLineProcessor extends BaseTableProcessor
             $importedThisPartition = DB::connection($connection)->transaction(function () use (
                 $connection, $tableName, $store, $date, $partitionRows, $chunkSize
             ) {
-                // Delete only the matching partition (store + date)
-                $deleted = DB::connection($connection)
-                    ->table($tableName)
-                    ->where('franchise_store', $store)
-                    ->where('business_date', $date)
-                    ->delete();
+                // Delete only the matching partition (store + date) — but only
+                // the first time this processor instance sees it (see
+                // BaseTableProcessor::deletePartitionOnce()), so a manual
+                // upload that streams the same partition across multiple
+                // chunks doesn't wipe out rows a prior chunk just inserted.
+                $this->deletePartitionOnce($connection, $tableName, $store, $date);
 
                 $inserted = 0;
 
