@@ -12,19 +12,22 @@ use ZipArchive;
  * column formatting the LC gateway produces) from data already stored in our
  * database, instead of re-downloading it from the LC gateway.
  *
- * Covers the 9 report types from the daily LC zip that are imported into a
+ * Covers the 10 report types from the daily LC zip that are imported into a
  * table, plus the 3 "Alta" inventory reports (InventoryCOGS,
  * InventoryPurchase-Orders, InventoryIngredient-Usage) which come from a
  * separate Alta feed rather than the daily LC zip (see getAvailableReports()).
- * Daily-Projections, Detail-Transactions and Summary-Toppings are not
- * persisted anywhere and are intentionally omitted.
+ * Daily-Projections and Summary-Toppings are not persisted anywhere and are
+ * intentionally omitted.
  *
- * The 9 LC-zip report definitions were verified byte-for-byte against a real
- * downloaded zip. The 3 Alta report definitions were NOT verified against a
- * real sample file (none was available) — their header names/order are
- * reconstructed from the import processors' column mappings, cross-checked
- * against the sibling LC_Pizza project's identical file-prefix/column-map
- * conventions.
+ * The 9 original LC-zip report definitions were verified byte-for-byte
+ * against a real downloaded zip. Detail-Transactions was added afterward and
+ * its column list/order is derived from a real sample file
+ * (Detail-Transactions-03795_2026-08-23.csv), not independently re-verified
+ * byte-for-byte against a full zip. The 3 Alta report definitions were NOT
+ * verified against a real sample file (none was available) — their header
+ * names/order are reconstructed from the import processors' column mappings,
+ * cross-checked against the sibling LC_Pizza project's identical
+ * file-prefix/column-map conventions.
  */
 class LcArchiveZipService
 {
@@ -313,6 +316,33 @@ class LcArchiveZipService
                     // Not persisted by DetailOrdersProcessor (aggregator order ref / Mexico factura id).
                     ['header' => 'MarketplaceOrderNumber', 'compute' => fn() => ''],
                     ['header' => 'FacturaUniqueId', 'compute' => fn() => ''],
+                ],
+            ],
+            [
+                'label' => 'Detail-Transactions',
+                'table' => 'detail_transactions',
+                'orderBy' => ['franchise_store', 'transaction_date_time', 'order_id'],
+                'columns' => [
+                    ['header' => 'FranchiseStore', 'db' => 'franchise_store', 'type' => 'string'],
+                    ['header' => 'BusinessDate', 'db' => 'business_date', 'type' => 'string'],
+                    ['header' => 'DateTimePlaced', 'db' => 'date_time_placed', 'type' => 'iso_datetime'],
+                    ['header' => 'DateTimeFulfilled', 'db' => 'date_time_fulfilled', 'type' => 'iso_datetime'],
+                    ['header' => 'TransactionDateTime', 'db' => 'transaction_date_time', 'type' => 'iso_datetime'],
+                    ['header' => 'TenderedAmount', 'db' => 'tendered_amount', 'type' => 'decimal4'],
+                    ['header' => 'PaymentMethod', 'db' => 'payment_method', 'type' => 'string'],
+                    ['header' => 'OrderId', 'db' => 'order_id', 'type' => 'string'],
+                    ['header' => 'SubPaymentMethod', 'db' => 'sub_payment_method', 'type' => 'string'],
+                    ['header' => 'Refund', 'db' => 'refund', 'type' => 'string'],
+                    ['header' => 'Employee', 'db' => 'employee', 'type' => 'string'],
+                    ['header' => 'OverrideApprovalEmployee', 'db' => 'override_approval_employee', 'type' => 'string'],
+                    ['header' => 'OrderPlacedMethod', 'db' => 'order_placed_method', 'type' => 'string'],
+                    ['header' => 'OrderFulfilledMethod', 'db' => 'order_fulfilled_method', 'type' => 'string'],
+                    ['header' => 'poNumber', 'db' => 'po_number', 'type' => 'string'],
+                    ['header' => 'poEntityName', 'db' => 'po_entity_name', 'type' => 'string'],
+                    ['header' => 'UserId', 'db' => 'user_id', 'type' => 'string'],
+                    ['header' => 'TerminalPaymentMade', 'db' => 'terminal_payment_made', 'type' => 'string'],
+                    ['header' => 'CardLast4', 'db' => 'card_last4', 'type' => 'string'],
+                    ['header' => 'SAFTransaction', 'db' => 'saf_transaction', 'type' => 'string'],
                 ],
             ],
             [

@@ -176,7 +176,7 @@ class DatabaseRouter
     public static function getAllDataDistribution(): array
     {
         $tables = [
-            'detail_orders', 'order_line', 'summary_sales', 'summary_items',
+            'detail_orders', 'order_line', 'detail_transactions', 'summary_sales', 'summary_items',
             'summary_transactions', 'waste', 'cash_management', 'financial_views',
             'alta_inventory_cogs', 'alta_inventory_ingredient_orders',
             'alta_inventory_ingredient_usage', 'alta_inventory_waste'

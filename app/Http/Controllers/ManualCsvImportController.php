@@ -15,6 +15,7 @@ class ManualCsvImportController extends Controller
     protected array $processorMap = [
         'detail_orders' => \App\Services\Import\Processors\DetailOrdersProcessor::class,
         'order_lines' => \App\Services\Import\Processors\OrderLineProcessor::class,
+        'detail_transactions' => \App\Services\Import\Processors\DetailTransactionsProcessor::class,
         'summary_sales' => \App\Services\Import\Processors\SummarySalesProcessor::class,
         'summary_items' => \App\Services\Import\Processors\SummaryItemsProcessor::class,
         'summary_transactions' => \App\Services\Import\Processors\SummaryTransactionsProcessor::class,
@@ -33,6 +34,7 @@ class ManualCsvImportController extends Controller
             'processors' => [
                 'detail_orders' => 'Detail Orders',
                 'order_lines' => 'Order Lines',
+                'detail_transactions' => 'Detail Transactions',
                 'summary_sales' => 'Summary Sales',
                 'summary_items' => 'Summary Items',
                 'summary_transactions' => 'Summary Transactions',

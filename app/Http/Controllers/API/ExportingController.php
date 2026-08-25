@@ -335,6 +335,7 @@ class ExportingController extends Controller
         $orderMap = [
             'detail_orders' => ['franchise_store', 'business_date'],
             'order_line' => ['franchise_store', 'business_date'],
+            'detail_transactions' => ['franchise_store', 'business_date'],
             'summary_sales' => ['franchise_store', 'business_date'],
             'summary_items' => ['franchise_store', 'business_date'],
             'summary_transactions' => ['franchise_store', 'business_date'],
@@ -478,6 +479,7 @@ class ExportingController extends Controller
         return [
             'detail_orders',
             'order_line',
+            'detail_transactions',
             'summary_sales',
             'summary_items',
             'summary_transactions',
@@ -675,6 +677,28 @@ class ExportingController extends Controller
                 'modification_reason',
                 'payment_methods',
                 'refunded'
+            ],
+            'detail_transactions' => [
+                'franchise_store',
+                'business_date',
+                'date_time_placed',
+                'date_time_fulfilled',
+                'transaction_date_time',
+                'tendered_amount',
+                'payment_method',
+                'order_id',
+                'sub_payment_method',
+                'refund',
+                'employee',
+                'override_approval_employee',
+                'order_placed_method',
+                'order_fulfilled_method',
+                'po_number',
+                'po_entity_name',
+                'user_id',
+                'terminal_payment_made',
+                'card_last4',
+                'saf_transaction'
             ],
             'summary_sales' => [
                 'franchise_store',

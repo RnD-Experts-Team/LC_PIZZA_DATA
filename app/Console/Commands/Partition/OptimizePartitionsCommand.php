@@ -28,6 +28,7 @@ class OptimizePartitionsCommand extends Command
     protected array $defaultTables = [
         'detail_orders_hot',
         'order_line_hot',
+        'detail_transactions_hot',
         'summary_sales_hot',
         'summary_items_hot',
         'summary_transactions_hot',
@@ -40,6 +41,7 @@ class OptimizePartitionsCommand extends Command
         'alta_inventory_waste_hot',
         'detail_orders_archive',
         'order_line_archive',
+        'detail_transactions_archive',
         'summary_sales_archive',
         'summary_items_archive',
         'summary_transactions_archive',
