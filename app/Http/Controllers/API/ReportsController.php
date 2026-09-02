@@ -573,23 +573,33 @@ class ReportsController extends Controller
     }
 
     /**
-     * HNR+ store-score category: the report's weighted total_score (0-100)
-     * scaled to $max. Replaces scoreHnr() on/after HNR_PLUS_CUTOFF.
+     * HNR+ store-score category (max $max, e.g. 20): scored the same way the
+     * old scoreHnr() was — the report's weighted total_score (0-100, "actual")
+     * compared against the same 'hnr' goal metric, only penalized when below
+     * goal. Replaces scoreHnr() on/after HNR_PLUS_CUTOFF.
      */
-    private function scoreHnrPlus(string $store, CarbonImmutable $weekStart, CarbonImmutable $weekEnd, float $max): array
+    private function scoreHnrPlus(string $store, CarbonImmutable $weekStart, CarbonImmutable $weekEnd, float $max, ?float $goal): array
     {
         $effective = $this->hnrPlusEffectiveWeek($store, $weekStart, $weekEnd);
         $totals = $this->hnrPlusTotalsForWeek($store, $effective['start']);
         $scores = $this->computeHnrPlusScores($totals);
 
-        $score = round($scores['total_score'] / 100 * $max, 2);
+        $actual = $scores['total_score'];
+
+        if ($goal === null) {
+            $score = 0.0;
+        } else {
+            $below = max(0.0, $goal - $actual);
+            $score = round(max(0.0, $max - $below), 2);
+        }
 
         return [
             'key' => 'hnr_plus',
             'label' => 'HNR+',
             'score' => $score,
             'max' => $max,
-            'total_score' => $scores['total_score'],
+            'actual_percent' => $actual,
+            'goal_percent' => $goal,
             'data_week_start' => $effective['start']->toDateString(),
             'data_week_end' => $effective['end']->toDateString(),
             'used_previous_week' => $effective['used_previous_week'],
@@ -1867,7 +1877,13 @@ class ReportsController extends Controller
         );
 
         $hnrCategory = $useHnrPlus
-            ? $this->scoreHnrPlus($store, $weekStart, $day, $scoreMax['hnr'])
+            ? $this->scoreHnrPlus(
+                $store,
+                $weekStart,
+                $weekStart->addDays(6),
+                $scoreMax['hnr'],
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
+            )
             : $this->scoreHnr(
                 $this->importantItemsHnrDailyRowsForRange($store, $weekStart, $day),
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
