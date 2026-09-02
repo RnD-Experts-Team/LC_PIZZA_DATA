@@ -20,6 +20,7 @@ use App\Http\Controllers\API\{
     CleaningReviewController,
     PricingKpiController,
     LcArchiveExportController,
+    HnrPlusController,
 };
 
 
@@ -162,6 +163,7 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
 Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');
 Route::get('/reports/transfer-in-out/{store}/{date}', [ReportsController::class, 'transferInOutReport'])->middleware('auth.token.store');
 Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class, 'ordersVsSalesReport'])->middleware('auth.token.store');
+Route::get('/reports/hnr-plus/{store}/{date}', [ReportsController::class, 'hnrPlusReport'])->middleware('auth.token.store');
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -170,6 +172,13 @@ Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class,
 
 Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware('auth.token.store');
 Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// HNR+ ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+Route::post('/hnr-plus/upload-csv', [HnrPlusController::class, 'uploadCsv'])->middleware('auth.token.store');
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
