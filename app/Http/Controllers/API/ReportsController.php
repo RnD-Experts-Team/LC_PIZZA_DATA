@@ -25,6 +25,7 @@ use App\Models\TransferInOut;
 use App\Models\InventoryOrder;
 use App\Models\CleaningReview;
 use App\Models\CustomerService;
+use App\Models\HnrPlusItem;
 /**
  * DSPR Lite Report Controller
  *
@@ -114,6 +115,12 @@ class ReportsController extends Controller
     /** Dates on/after this use the floor/ceil normal-hours formula. */
     private const NORMAL_HOURS_NEW_CUTOFF = '2026-06-30';
 
+    /**
+     * Dates on/after this replace the HnR store-score category with HNR+
+     * (see scoreHnrPlus()) and use SCORE_MAX_HNR_PLUS instead of SCORE_MAX.
+     */
+    private const HNR_PLUS_CUTOFF = '2026-08-18';
+
     /** entered_keys ids feeding the score. */
     private const SCORE_KEY_NORMAL_HOURS = 25;
     private const SCORE_KEY_OVERTIME_HOURS = 26;
@@ -125,6 +132,21 @@ class ReportsController extends Controller
         'overtime_hours' => 15,
         'portal' => 10,
         'hnr' => 10,
+        'transfer_in' => 7.5,
+        'items_turned_off' => 7.5,
+        'orders_vs_sales' => 15,
+    ];
+
+    /**
+     * Maximum points per category (sum = 100), on/after HNR_PLUS_CUTOFF: the
+     * 'hnr' slot becomes the HNR+ category (see scoreHnrPlus()) and gets a
+     * bigger share, taken from normal_hours/overtime_hours.
+     */
+    private const SCORE_MAX_HNR_PLUS = [
+        'normal_hours' => 30,
+        'overtime_hours' => 10,
+        'portal' => 10,
+        'hnr' => 20,
         'transfer_in' => 7.5,
         'items_turned_off' => 7.5,
         'orders_vs_sales' => 15,
@@ -361,6 +383,227 @@ class ReportsController extends Controller
                 'current_week' => round($blueLineCurrent, 2),
                 'previous_week' => round($blueLinePrevious, 2),
             ]
+        ];
+    }
+
+    public function hnrPlusReport(string $store, string $date): JsonResponse
+    {
+        $this->validateInputs($store, $date);
+
+        return response()->json($this->buildHnrPlusReport($store, $date));
+    }
+
+    /**
+     * Store-wide HNR+ report for the store's current business week: made/sold
+     * /void/waste/variance/no-inventory totals and percentages (of Made),
+     * plus the weighted HNR+ total score. Falls back to the most recently
+     * completed week's data if this week's HNR+ CSV hasn't landed yet (see
+     * hnrPlusEffectiveWeek()) — same lag as orders-vs-sales.
+     */
+    private function buildHnrPlusReport(string $store, string $date): array
+    {
+        $day = CarbonImmutable::parse($date)->startOfDay();
+        [$weekStart, $weekEnd] = $this->isoBusinessWeek($day);
+
+        $effective = $this->hnrPlusEffectiveWeek($store, $weekStart, $weekEnd);
+        $totals = $this->hnrPlusTotalsForWeek($store, $effective['start']);
+        $scores = $this->computeHnrPlusScores($totals);
+
+        $items = HnrPlusItem::where('store_number', $store)
+            ->where('week_start', $effective['start']->toDateString())
+            ->orderBy('item_name')
+            ->get(['item_id', 'item_name', 'made', 'sold', 'voided', 'wasted', 'variance', 'no_inventory_available']);
+
+        return [
+            'filtering' => [
+                'store' => $store,
+                'date' => $day->toDateString(),
+                'week_start' => $weekStart->toDateString(),
+                'week_end' => $weekEnd->toDateString(),
+                'data_week_start' => $effective['start']->toDateString(),
+                'data_week_end' => $effective['end']->toDateString(),
+                'used_previous_week' => $effective['used_previous_week'],
+            ],
+            ...$scores,
+            'items' => $items,
+        ];
+    }
+
+    /**
+     * Business week to actually use for HNR+ figures (report and score). If
+     * the current business week has no HNR+ rows at all (this week's export
+     * hasn't been uploaded yet), fall back to the immediately prior week's
+     * data instead. Mirrors ordersVsSalesEffectiveWeek().
+     */
+    private function hnrPlusEffectiveWeek(string $store, CarbonImmutable $weekStart, CarbonImmutable $weekEnd): array
+    {
+        $key = "hnrPlusEffectiveWeek:{$store}:{$weekStart->toDateString()}:{$weekEnd->toDateString()}";
+
+        return $this->remember($key, function () use ($store, $weekStart, $weekEnd): array {
+            $hasData = HnrPlusItem::where('store_number', $store)
+                ->where('week_start', $weekStart->toDateString())
+                ->exists();
+
+            if ($hasData) {
+                return ['start' => $weekStart, 'end' => $weekEnd, 'used_previous_week' => false];
+            }
+
+            return ['start' => $weekStart->subWeek(), 'end' => $weekEnd->subWeek(), 'used_previous_week' => true];
+        });
+    }
+
+    /** Store-wide made/sold/voided/wasted/variance/no-inventory totals for one business week (memoized). */
+    private function hnrPlusTotalsForWeek(string $store, CarbonImmutable $weekStart): array
+    {
+        $key = "hnrPlusTotalsForWeek:{$store}:{$weekStart->toDateString()}";
+
+        return $this->remember($key, function () use ($store, $weekStart): array {
+            $row = HnrPlusItem::where('store_number', $store)
+                ->where('week_start', $weekStart->toDateString())
+                ->selectRaw(
+                    'COALESCE(SUM(made), 0) as made,'
+                    . ' COALESCE(SUM(sold), 0) as sold,'
+                    . ' COALESCE(SUM(voided), 0) as voided,'
+                    . ' COALESCE(SUM(wasted), 0) as wasted,'
+                    . ' COALESCE(SUM(variance), 0) as variance,'
+                    . ' COALESCE(SUM(no_inventory_available), 0) as no_inventory_available'
+                )
+                ->first();
+
+            return [
+                'made' => (int) ($row->made ?? 0),
+                'sold' => (int) ($row->sold ?? 0),
+                'voided' => (int) ($row->voided ?? 0),
+                'wasted' => (int) ($row->wasted ?? 0),
+                'variance' => (int) ($row->variance ?? 0),
+                'no_inventory_available' => (int) ($row->no_inventory_available ?? 0),
+            ];
+        });
+    }
+
+    /**
+     * HNR+ percentages (of Made) and category scores from store-wide totals.
+     * Weighted total score (0-100): variance 35%, sold 10%, no-inventory 20%,
+     * void 20%, waste 15%.
+     */
+    private function computeHnrPlusScores(array $totals): array
+    {
+        $made = $totals['made'];
+        $pct = fn (int $value): float => $made > 0 ? round(($value / $made) * 100, 2) : 0.0;
+
+        $soldPercent = $pct($totals['sold']);
+        $voidPercent = $pct($totals['voided']);
+        $wastePercent = $pct($totals['wasted']);
+        $variancePercent = $pct($totals['variance']);
+        $noInventoryPercent = $pct($totals['no_inventory_available']);
+
+        $varianceScore = $this->hnrPlusTieredScore(abs($variancePercent), [5 => 100, 8 => 95, 11 => 90, 17 => 80, 25 => 60, 30 => 30]);
+        $noInventoryScore = $this->hnrPlusTieredScore(abs($noInventoryPercent), [5 => 100, 8 => 95, 11 => 90, 17 => 80, 25 => 60, 30 => 30]);
+        $wasteScore = $this->hnrPlusTieredScore($wastePercent, [8 => 100, 10 => 95, 12 => 90, 15 => 80, 20 => 60, 25 => 30]);
+        $voidScore = $this->hnrPlusTieredScore($voidPercent, [4 => 100, 6 => 95, 8 => 90, 11 => 80, 15 => 60, 20 => 30]);
+        $soldScore = $this->hnrPlusSoldScore($soldPercent);
+
+        $totalScore = round(
+            $varianceScore * 0.35
+            + $soldScore * 0.10
+            + $noInventoryScore * 0.20
+            + $voidScore * 0.20
+            + $wasteScore * 0.15,
+            2
+        );
+
+        return [
+            'made' => $made,
+            'sold_percent' => $soldPercent,
+            'void_percent' => $voidPercent,
+            'waste_percent' => $wastePercent,
+            'variance_percent' => $variancePercent,
+            'no_inventory_percent' => $noInventoryPercent,
+            'variance_score' => $varianceScore,
+            'sold_score' => $soldScore,
+            'no_inventory_score' => $noInventoryScore,
+            'void_score' => $voidScore,
+            'waste_score' => $wasteScore,
+            'total_score' => $totalScore,
+        ];
+    }
+
+    /**
+     * Ascending-threshold tiered score: $tiers is [threshold => score] kept in
+     * ascending threshold order; the first threshold strictly greater than
+     * $value wins. Falls through to 0 if $value meets/exceeds every threshold.
+     */
+    private function hnrPlusTieredScore(float $value, array $tiers): float
+    {
+        foreach ($tiers as $threshold => $score) {
+            if ($value < $threshold) {
+                return (float) $score;
+            }
+        }
+
+        return 0.0;
+    }
+
+    /** Sold-percent score: peaks at 80-85% of Made, falls off both above and below. */
+    private function hnrPlusSoldScore(float $soldPercent): float
+    {
+        if ($soldPercent > 105) {
+            return 0.0;
+        }
+        if ($soldPercent > 102) {
+            return 30.0;
+        }
+        if ($soldPercent > 100) {
+            return 60.0;
+        }
+        if ($soldPercent > 85) {
+            return 90.0;
+        }
+        if ($soldPercent > 80) {
+            return 80.0;
+        }
+        if ($soldPercent > 70) {
+            return 65.0;
+        }
+        if ($soldPercent > 60) {
+            return 45.0;
+        }
+
+        return 25.0;
+    }
+
+    /**
+     * HNR+ store-score category (max $max, e.g. 20): scored the same way the
+     * old scoreHnr() was — the report's weighted total_score (0-100, "actual")
+     * compared against the same 'hnr' goal metric, only penalized when below
+     * goal. Replaces scoreHnr() on/after HNR_PLUS_CUTOFF.
+     */
+    private function scoreHnrPlus(string $store, CarbonImmutable $weekStart, CarbonImmutable $weekEnd, float $max, ?float $goal): array
+    {
+        $effective = $this->hnrPlusEffectiveWeek($store, $weekStart, $weekEnd);
+        $totals = $this->hnrPlusTotalsForWeek($store, $effective['start']);
+        $scores = $this->computeHnrPlusScores($totals);
+
+        $actual = $scores['total_score'];
+
+        if ($goal === null) {
+            $score = 0.0;
+        } else {
+            $below = max(0.0, $goal - $actual);
+            $score = round(max(0.0, $max - $below), 2);
+        }
+
+        return [
+            'key' => 'hnr_plus',
+            'label' => 'HNR+',
+            'score' => $score,
+            'max' => $max,
+            'actual_percent' => $actual,
+            'goal_percent' => $goal,
+            'data_week_start' => $effective['start']->toDateString(),
+            'data_week_end' => $effective['end']->toDateString(),
+            'used_previous_week' => $effective['used_previous_week'],
+            'breakdown' => $scores,
         ];
     }
 
@@ -797,6 +1040,7 @@ class ReportsController extends Controller
             'transfer-in-out' => $this->buildTransferInOutReport($store, $date),
             'portioning' => $this->buildPortioningReport($store, $date),
             'orders-vs-sales' => $this->buildOrdersVsSalesReport($store, $date),
+            'hnr-plus' => $this->buildHnrPlusReport($store, $date),
             'sales-history' => $this->buildSalesHistory($store, $date),
         ]);
     }
@@ -1614,6 +1858,11 @@ class ReportsController extends Controller
         $ordersVsSalesEffectiveWeekStart = $ordersVsSalesEffectiveWeek['start'];
         $ordersVsSalesEffectiveDay = $ordersVsSalesEffectiveWeek['used_previous_week'] ? $day->subWeek() : $day;
 
+        // On/after HNR_PLUS_CUTOFF: HNR+ replaces HnR and normal/overtime hours
+        // caps shrink to make room for it (sum stays 100 either way).
+        $useHnrPlus = $day->toDateString() >= self::HNR_PLUS_CUTOFF;
+        $scoreMax = $useHnrPlus ? self::SCORE_MAX_HNR_PLUS : self::SCORE_MAX;
+
         $hours = $this->scoreHours(
             $store,
             $weekStart,
@@ -1623,8 +1872,22 @@ class ReportsController extends Controller
             $prevWeekStart,
             $previousWeekTotal,
             $weekToDateSalesTotal,
-            $goalMetrics
+            $goalMetrics,
+            $scoreMax
         );
+
+        $hnrCategory = $useHnrPlus
+            ? $this->scoreHnrPlus(
+                $store,
+                $weekStart,
+                $weekStart->addDays(6),
+                $scoreMax['hnr'],
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
+            )
+            : $this->scoreHnr(
+                $this->importantItemsHnrDailyRowsForRange($store, $weekStart, $day),
+                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
+            );
 
         $details = [
             $hours['normal_hours'],
@@ -1633,10 +1896,7 @@ class ReportsController extends Controller
                 $dailyRows,
                 $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['portal'])
             ),
-            $this->scoreHnr(
-                $this->importantItemsHnrDailyRowsForRange($store, $weekStart, $day),
-                $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['hnr'])
-            ),
+            $hnrCategory,
             $this->scoreTransferIn($store, $weekStart, $day),
             $this->scoreItemsTurnedOff($store, $weekStart, $day),
             $this->scoreOrdersVsSales(
@@ -1686,10 +1946,11 @@ class ReportsController extends Controller
         CarbonImmutable $prevWeekStart,
         float $previousWeekTotal,
         float $weekToDateSalesTotal,
-        array $goalMetrics
+        array $goalMetrics,
+        array $scoreMax = self::SCORE_MAX
     ): array {
-        $normalMax = self::SCORE_MAX['normal_hours'];
-        $otMax = self::SCORE_MAX['overtime_hours'];
+        $normalMax = $scoreMax['normal_hours'];
+        $otMax = $scoreMax['overtime_hours'];
 
         $salesGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['sales']);
         $otGoal = $this->goalValueFromMetrics($goalMetrics, self::SCORE_GOAL_METRIC_IDS['overtime_hours']);
@@ -1726,8 +1987,8 @@ class ReportsController extends Controller
                 $origOt = $otGoal * $w;
                 $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
-                [$normalScore, $normalCase] = $this->normalHoursScoreNew($updFloor, $updCeil, $actNormal);
-                $otScore = $this->overtimeHoursScore($updOt, $actOt, $updCeil);
+                [$normalScore, $normalCase] = $this->normalHoursScoreNew($updFloor, $updCeil, $actNormal, $normalMax);
+                $otScore = $this->overtimeHoursScore($updOt, $actOt, $updCeil, $otMax);
             } else {
                 $origFloor = $origCeil = $origOt = $proratedSalesGoal = 0.0;
                 $salesDiff = $steps = $updFloor = $updCeil = $updOt = 0.0;
@@ -1782,7 +2043,7 @@ class ReportsController extends Controller
             $updOt = $origOt + $steps * self::SCORE_FLEX_OVERTIME_HOURS_STEP;
 
             [$normalScore, $normalCase] = $this->normalHoursScore($origNormal, $updNormal, $actNormal);
-            $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal);
+            $otScore = $this->overtimeHoursScore($updOt, $actOt, $updNormal, $otMax);
         } else {
             $origNormal = $origOt = $proratedSalesGoal = 0.0;
             $salesDiff = $steps = $updNormal = $updOt = 0.0;
@@ -1857,13 +2118,14 @@ class ReportsController extends Controller
     }
 
     /**
-     * Normal-hours score (out of 35) — new formula (dates >= NORMAL_HOURS_NEW_CUTOFF).
-     * Full 35 when actual is within [floor, ceil].
+     * Normal-hours score (out of $max — 35, or 30 on/after HNR_PLUS_CUTOFF) —
+     * new formula (dates >= NORMAL_HOURS_NEW_CUTOFF).
+     * Full $max when actual is within [floor, ceil].
      * Above ceil: deduct ((actual - ceil) / ceil) * 5.
      * Below floor: deduct ((floor - actual) / ceil) * 5.
      * Returns [score, case] where case 1=over, 2=under, 3=within.
      */
-    private function normalHoursScoreNew(float $floor, float $ceil, float $actual): array
+    private function normalHoursScoreNew(float $floor, float $ceil, float $actual, float $max = self::SCORE_MAX['normal_hours']): array
     {
         if ($ceil <= 0) {
             return [0.0, 0];
@@ -1880,24 +2142,25 @@ class ReportsController extends Controller
             $case = 3;
         }
 
-        return [max(0.0, 35.0 - $deduction * 100), $case];
+        return [max(0.0, $max - $deduction * 100), $case];
     }
 
     /**
-     * Overtime-hours score (out of 15). Full points when actual <= goal;
-     * otherwise penalized by the gap relative to the updated NORMAL goal.
+     * Overtime-hours score (out of $max — 15, or 10 on/after HNR_PLUS_CUTOFF).
+     * Full points when actual <= goal; otherwise penalized by the gap
+     * relative to the updated NORMAL goal.
      */
-    private function overtimeHoursScore(float $updOt, float $actOt, float $updNormal): float
+    private function overtimeHoursScore(float $updOt, float $actOt, float $updNormal, float $max = self::SCORE_MAX['overtime_hours']): float
     {
         if ($updNormal <= 0) {
             return 0.0;
         }
 
         if ($actOt <= $updOt) {
-            return 0.15 * 100;
+            return $max;
         }
 
-        return max(0.0, 0.15 - (abs($updOt - $actOt) / $updNormal) * 2) * 100;
+        return max(0.0, ($max / 100) - (abs($updOt - $actOt) / $updNormal) * 2) * 100;
     }
 
     /**
