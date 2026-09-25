@@ -25,12 +25,14 @@ class DoughSaucePlanController extends Controller
     ) {
     }
 
-    public function dailyPlan(DailyPlanRequest $request): JsonResponse
+    public function dailyPlan(DailyPlanRequest $request, string $store_id): JsonResponse
     {
         $data = $request->validated();
 
+        // {store_id} is the franchise_store code exactly as daily_item_summary
+        // stores it — this project has no local Store model to resolve against.
         return response()->json($this->plans->dailyPlan(
-            store:           $data['store'],
+            store:           $store_id,
             date:            Carbon::parse($data['date']),
             lookback:        $request->lookback(),
             includeRefunded: $request->includeRefunded(),

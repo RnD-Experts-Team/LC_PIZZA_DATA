@@ -40,8 +40,9 @@ class DailyPlanRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'store' => 'required|string|max:20',
-            'date'  => 'required|date_format:Y-m-d',
+            // `store` is not here: it is the {store_id} path segment, which is
+            // what pizzasys authorizes against.
+            'date' => 'required|date_format:Y-m-d',
 
             // 4 is the workbook's window. Capped at 12 because the averaging
             // window is a business rule, not a dial, and a caller asking for a
@@ -58,7 +59,6 @@ class DailyPlanRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'store.required'   => 'store is required (the franchise_store code).',
             'date.required'    => 'date is required.',
             'date.date_format' => 'date must be YYYY-MM-DD.',
             'lookback.integer' => 'lookback must be a number.',
