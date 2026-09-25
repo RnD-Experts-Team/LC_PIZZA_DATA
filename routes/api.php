@@ -21,6 +21,8 @@ use App\Http\Controllers\API\{
     PricingKpiController,
     LcArchiveExportController,
     HnrPlusController,
+    DoughSaucePlanController,
+    DoughSauceRecipeController,
 };
 
 
@@ -187,3 +189,36 @@ Route::post('/hnr-plus/upload-csv', [HnrPlusController::class, 'uploadCsv'])->mi
 
 Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware('auth.token.store');
 Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'uploadCustomerServiceCsv'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// DOUGH & SAUCE ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// Consumed by the Dough & Sauce module in AuditApp, whose browser calls these
+// directly. Read-only against daily_item_summary plus three small reference
+// tables of our own (ds_ingredients / ds_menu_items / ds_recipes); nothing in the
+// aggregation pipeline is written or altered.
+//
+// The plan endpoint is rate limited: 44 store screens can be open at once, and
+// every protected request here also makes a synchronous token check against the
+// auth server.
+
+Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () {
+
+    // Ingredient units the four previous same-weekdays needed, averaged and
+    // divided — plus the items that sold with no recipe, which the workbook this
+    // replaces counted as zero without telling anyone.
+    Route::get('daily-plan', [DoughSaucePlanController::class, 'dailyPlan'])
+        ->middleware('throttle:dough-sauce')
+        ->name('dough-sauce.daily-plan');
+
+    // Recipe maintenance. The screen is in AuditApp — when the specialist sees an
+    // item with no recipe there, these are what the fix button calls.
+    Route::get('ingredients', [DoughSauceRecipeController::class, 'ingredients'])->name('dough-sauce.ingredients');
+    Route::get('recipes', [DoughSauceRecipeController::class, 'index'])->name('dough-sauce.recipes.index');
+    Route::post('recipes', [DoughSauceRecipeController::class, 'store'])->name('dough-sauce.recipes.store');
+    // Dates the change, never overwrites — so a past week still computes the way
+    // it was planned.
+    Route::put('recipes/{recipe}', [DoughSauceRecipeController::class, 'update'])->name('dough-sauce.recipes.update');
+    Route::delete('recipes/{recipe}', [DoughSauceRecipeController::class, 'destroy'])->name('dough-sauce.recipes.destroy');
+});
