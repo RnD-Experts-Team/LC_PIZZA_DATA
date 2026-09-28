@@ -1,8 +1,9 @@
 <?php
 
-namespace App\Models\Aggregation;
+namespace App\Models;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
@@ -12,12 +13,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * `effective_to` and opens a new one — which is what makes opening a past week
  * give the number that week was actually planned with.
  */
-class DsRecipe extends AggregationModel
+class Dough_SauceRecipe extends Model
 {
-    protected $table = 'ds_recipes';
+    protected $table = 'dough_sauce_recipes';
 
     protected $fillable = [
-        'ds_menu_item_id', 'ds_ingredient_id', 'qty',
+        'dough_sauce_menu_item_id', 'dough_sauce_ingredient_id', 'qty',
         'effective_from', 'effective_to', 'created_by',
     ];
 
@@ -31,12 +32,12 @@ class DsRecipe extends AggregationModel
 
     public function menuItem(): BelongsTo
     {
-        return $this->belongsTo(DsMenuItem::class, 'ds_menu_item_id');
+        return $this->belongsTo(Dough_SauceMenuItem::class, 'dough_sauce_menu_item_id');
     }
 
     public function ingredient(): BelongsTo
     {
-        return $this->belongsTo(DsIngredient::class, 'ds_ingredient_id');
+        return $this->belongsTo(Dough_SauceIngredient::class, 'dough_sauce_ingredient_id');
     }
 
     /** Rows in force on a given business date. */
@@ -46,5 +47,12 @@ class DsRecipe extends AggregationModel
 
         return $query->whereDate('effective_from', '<=', $date)
             ->where(fn ($q) => $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', $date));
+    }
+
+    /** Rows in force at any point inside a window — what the plan query needs. */
+    public function scopeEffectiveWithin($query, string $from, string $to)
+    {
+        return $query->whereDate('effective_from', '<=', $to)
+            ->where(fn ($q) => $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', $from));
     }
 }

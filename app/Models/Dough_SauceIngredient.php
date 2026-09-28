@@ -1,7 +1,8 @@
 <?php
 
-namespace App\Models\Aggregation;
+namespace App\Models;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -9,10 +10,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  *
  * `divisor` converts a sales quantity into the unit the inventory system counts:
  * pizzas / 1 = balls, bread / 12 = balls, sauce portions / 80 = containers.
+ *
+ * On the default connection, like every other model in this namespace. It is
+ * reference data a human maintains, not output of the aggregation pipeline.
  */
-class DsIngredient extends AggregationModel
+class Dough_SauceIngredient extends Model
 {
-    protected $table = 'ds_ingredients';
+    protected $table = 'dough_sauce_ingredients';
 
     protected $fillable = [
         'key', 'name', 'unit', 'divisor', 'inventory_ref', 'sort_order', 'active',
@@ -28,7 +32,7 @@ class DsIngredient extends AggregationModel
 
     public function recipes(): HasMany
     {
-        return $this->hasMany(DsRecipe::class, 'ds_ingredient_id');
+        return $this->hasMany(Dough_SauceRecipe::class, 'dough_sauce_ingredient_id');
     }
 
     public function scopeActive($query)

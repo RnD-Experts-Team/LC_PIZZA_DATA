@@ -2,6 +2,8 @@
 
 namespace App\Services\DoughSauce;
 
+use App\Models\Dough_SauceIngredient;
+use App\Models\Dough_SauceRecipe;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +29,21 @@ use Illuminate\Support\Facades\DB;
  * than scanning order lines. The four dates are also all at least 7 days old,
  * which puts them at or before the rebuild window's start: they are settled.
  *
+ * WHY TWO QUERIES AND NOT A JOIN
+ * ------------------------------
+ * Sales live in `aggregation`; the recipe tables live in the application
+ * database. Those are separate schemas with their own host settings in
+ * config/database.php, so a statement joining across them could work on one
+ * machine and fail on another. Instead: read the recipes (about 82 rows), read
+ * the sales for four dates, multiply in PHP. The recipe side is small and fully
+ * indexed, the sales side is one grouped read of a partitioned table, and the
+ * multiplication is a few hundred iterations.
+ *
+ * The date arithmetic that a SQL join used to do is done here instead, by
+ * `recipeMap()` building one map per date from the effective-dated rows. Same
+ * result: each day is multiplied by the recipe that was in force on that day, not
+ * by today's.
+ *
  * WHAT IT DOES NOT DO
  * -------------------
  * It does not apply a buffer and it does not produce a plan. The buffer is a
@@ -49,21 +66,21 @@ class DoughSaucePlanService
     ): array {
         $dates = $this->sourceDates($date, $lookback);
 
-        $totals     = $this->totalsByDateAndIngredient($store, $dates, $includeRefunded);
+        $sales       = $this->salesByDateAndItem($store, $dates, $includeRefunded);
+        $recipes     = $this->recipeMap($dates);
         $ingredients = $this->ingredients();
 
-        $rows      = [];
-        $daysFound = count(array_unique(array_column($totals, 'business_date')));
+        $totals    = $this->multiply($sales, $recipes);
+        $daysFound = count(array_unique(array_column($sales, 'business_date')));
+
+        $rows = [];
 
         foreach ($ingredients as $ingredient) {
             $values = [];
 
             foreach ($dates as $d) {
-                foreach ($totals as $row) {
-                    if ($row['business_date'] === $d && $row['ingredient_key'] === $ingredient->key) {
-                        $values[$d] = (float) $row['units'];
-                        continue 2;
-                    }
+                if (isset($totals[$d][$ingredient->key])) {
+                    $values[$d] = $totals[$d][$ingredient->key];
                 }
                 // A date with no row for this ingredient contributes nothing. It is
                 // reported through days_found rather than being averaged as a zero.
@@ -98,7 +115,7 @@ class DoughSaucePlanService
             'lookback'         => $lookback,
             'include_refunded' => $includeRefunded,
             'ingredients'      => $rows,
-            'unmapped'         => $this->unmapped($store, $dates),
+            'unmapped'         => $this->unmapped($sales, $recipes),
         ];
     }
 
@@ -123,15 +140,15 @@ class DoughSaucePlanService
     }
 
     /**
-     * Ingredient units sold per date — sales x recipe, summed.
+     * What sold, per date and item — the only read against `aggregation`.
      *
-     * One query. The recipe join is date-bounded so each day is multiplied by the
-     * recipe that was in force on that day, not today's.
+     * Already grouped by the database, so what comes back is one row per item per
+     * day: a few hundred rows for a four-date window, not order lines.
      *
      * @param  array<int, string>  $dates
      * @return array<int, array<string, mixed>>
      */
-    private function totalsByDateAndIngredient(string $store, array $dates, bool $includeRefunded): array
+    private function salesByDateAndItem(string $store, array $dates, bool $includeRefunded): array
     {
         $quantity = $includeRefunded
             ? 's.quantity_sold'
@@ -139,29 +156,108 @@ class DoughSaucePlanService
 
         return DB::connection('aggregation')
             ->table('daily_item_summary as s')
-            ->join('ds_menu_items as m', 'm.item_id', '=', 's.item_id')
-            ->join('ds_recipes as r', function ($join) {
-                $join->on('r.ds_menu_item_id', '=', 'm.id')
-                    ->whereColumn('s.business_date', '>=', 'r.effective_from')
-                    ->where(fn ($q) => $q->whereNull('r.effective_to')
-                        ->orWhereColumn('s.business_date', '<=', 'r.effective_to'));
-            })
-            ->join('ds_ingredients as i', 'i.id', '=', 'r.ds_ingredient_id')
             ->where('s.franchise_store', $store)
             ->whereIn('s.business_date', $dates)
-            ->groupBy('s.business_date', 'i.key')
+            ->groupBy('s.business_date', 's.item_id')
             ->orderBy('s.business_date')
             ->get([
                 DB::raw('s.business_date as business_date'),
-                DB::raw('i.`key` as ingredient_key'),
-                DB::raw("SUM({$quantity} * r.qty) as units"),
+                's.item_id',
+                DB::raw('MAX(s.menu_item_name) as menu_item_name'),
+                DB::raw('MAX(s.menu_item_account) as menu_item_account'),
+                DB::raw("SUM({$quantity}) as quantity"),
+                // Kept separate from `quantity`: the unmapped report counts what was
+                // sold, which should not move when the caller flips include_refunded.
+                DB::raw('SUM(s.quantity_sold) as quantity_sold'),
             ])
             ->map(fn ($r) => [
-                'business_date'  => Carbon::parse($r->business_date)->toDateString(),
-                'ingredient_key' => $r->ingredient_key,
-                'units'          => (float) $r->units,
+                'business_date'     => Carbon::parse($r->business_date)->toDateString(),
+                'item_id'           => (string) $r->item_id,
+                'menu_item_name'    => $r->menu_item_name,
+                'menu_item_account' => $r->menu_item_account,
+                'quantity'          => (float) $r->quantity,
+                'quantity_sold'     => (float) $r->quantity_sold,
             ])
             ->all();
+    }
+
+    /**
+     * The recipe in force on each date: date -> item_id -> ingredient key -> qty.
+     *
+     * This is the effective-dating rule the SQL join used to express, moved into
+     * PHP because the two sides now live in different databases. One read of the
+     * rows that touch the window at all, then a pass per date. ~82 rows.
+     *
+     * @param  array<int, string>  $dates
+     * @return array<string, array<string, array<string, float>>>
+     */
+    private function recipeMap(array $dates): array
+    {
+        if (! $dates) {
+            return [];
+        }
+
+        $rows = Dough_SauceRecipe::query()
+            ->effectiveWithin(min($dates), max($dates))
+            ->with(['menuItem:id,item_id', 'ingredient:id,key'])
+            ->get();
+
+        $map = [];
+
+        foreach ($dates as $date) {
+            $map[$date] = [];
+
+            foreach ($rows as $row) {
+                $from = $row->effective_from?->toDateString();
+                $to   = $row->effective_to?->toDateString();
+
+                if ($from === null || $from > $date) {
+                    continue;
+                }
+
+                if ($to !== null && $to < $date) {
+                    continue;
+                }
+
+                $itemId = $row->menuItem?->item_id;
+                $key    = $row->ingredient?->key;
+
+                if ($itemId === null || $key === null) {
+                    continue;
+                }
+
+                $map[$date][$itemId][$key] = (float) $row->qty;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Sales x recipe, summed per date and ingredient.
+     *
+     * @param  array<int, array<string, mixed>>  $sales
+     * @param  array<string, array<string, array<string, float>>>  $recipes
+     * @return array<string, array<string, float>>
+     */
+    private function multiply(array $sales, array $recipes): array
+    {
+        $totals = [];
+
+        foreach ($sales as $row) {
+            $lines = $recipes[$row['business_date']][$row['item_id']] ?? null;
+
+            if (! $lines) {
+                continue;
+            }
+
+            foreach ($lines as $key => $qty) {
+                $totals[$row['business_date']][$key] =
+                    ($totals[$row['business_date']][$key] ?? 0.0) + $row['quantity'] * $qty;
+            }
+        }
+
+        return $totals;
     }
 
     /**
@@ -181,47 +277,50 @@ class DoughSaucePlanService
      * is correct, and warning about it would teach people to ignore the warning
      * that matters.
      *
-     * @param  array<int, string>  $dates
+     * Costs no query of its own — it is the same sales rows the plan was built
+     * from, filtered to the ones the recipe map had nothing for.
+     *
+     * @param  array<int, array<string, mixed>>  $sales
+     * @param  array<string, array<string, array<string, float>>>  $recipes
      * @return array<int, array<string, mixed>>
      */
-    private function unmapped(string $store, array $dates): array
+    private function unmapped(array $sales, array $recipes): array
     {
-        return DB::connection('aggregation')
-            ->table('daily_item_summary as s')
-            ->leftJoin('ds_menu_items as m', 'm.item_id', '=', 's.item_id')
-            ->leftJoin('ds_recipes as r', function ($join) {
-                $join->on('r.ds_menu_item_id', '=', 'm.id')
-                    ->whereColumn('s.business_date', '>=', 'r.effective_from')
-                    ->where(fn ($q) => $q->whereNull('r.effective_to')
-                        ->orWhereColumn('s.business_date', '<=', 'r.effective_to'));
-            })
-            ->where('s.franchise_store', $store)
-            ->whereIn('s.business_date', $dates)
-            ->whereIn('s.menu_item_account', self::CONSUMING_ACCOUNTS)
-            ->whereNull('r.id')
-            ->groupBy('s.item_id')
-            ->orderByDesc(DB::raw('SUM(s.quantity_sold)'))
-            ->get([
-                's.item_id',
-                DB::raw('MAX(s.menu_item_name) as name'),
-                DB::raw('MAX(s.menu_item_account) as account'),
-                DB::raw('SUM(s.quantity_sold) as quantity'),
-            ])
-            ->map(fn ($r) => [
-                'item_id'  => $r->item_id,
-                'name'     => $r->name,
-                'account'  => $r->account,
-                'quantity' => (int) $r->quantity,
-            ])
-            ->all();
+        $out = [];
+
+        foreach ($sales as $row) {
+            if (! in_array($row['menu_item_account'], self::CONSUMING_ACCOUNTS, true)) {
+                continue;
+            }
+
+            if (! empty($recipes[$row['business_date']][$row['item_id']])) {
+                continue;
+            }
+
+            $id = $row['item_id'];
+
+            if (! isset($out[$id])) {
+                $out[$id] = [
+                    'item_id'  => $id,
+                    'name'     => $row['menu_item_name'],
+                    'account'  => $row['menu_item_account'],
+                    'quantity' => 0,
+                ];
+            }
+
+            $out[$id]['quantity'] += (int) $row['quantity_sold'];
+        }
+
+        usort($out, fn ($a, $b) => $b['quantity'] <=> $a['quantity']);
+
+        return array_values($out);
     }
 
-    /** @return \Illuminate\Support\Collection<int, object> */
+    /** @return \Illuminate\Support\Collection<int, \App\Models\Dough_SauceIngredient> */
     private function ingredients()
     {
-        return DB::connection('aggregation')
-            ->table('ds_ingredients')
-            ->where('active', true)
+        return Dough_SauceIngredient::query()
+            ->active()
             ->orderBy('sort_order')
             ->get(['key', 'name', 'unit', 'divisor']);
     }

@@ -5,9 +5,9 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\DoughSauce\StoreRecipeRequest;
 use App\Http\Requests\DoughSauce\UpdateRecipeRequest;
-use App\Models\Aggregation\DsIngredient;
-use App\Models\Aggregation\DsMenuItem;
-use App\Models\Aggregation\DsRecipe;
+use App\Models\Dough_SauceIngredient;
+use App\Models\Dough_SauceMenuItem;
+use App\Models\Dough_SauceRecipe;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,7 +31,7 @@ class DoughSauceRecipeController extends Controller
     public function ingredients(): JsonResponse
     {
         return response()->json([
-            'ingredients' => DsIngredient::query()
+            'ingredients' => Dough_SauceIngredient::query()
                 ->active()
                 ->orderBy('sort_order')
                 ->get(['key', 'name', 'unit', 'divisor', 'inventory_ref']),
@@ -61,7 +61,7 @@ class DoughSauceRecipeController extends Controller
             'all'     => 'sometimes|boolean',
         ]);
 
-        $query = DsRecipe::query()->with(['menuItem', 'ingredient']);
+        $query = Dough_SauceRecipe::query()->with(['menuItem', 'ingredient']);
 
         if (! empty($data['item_id'])) {
             $query->whereHas('menuItem', fn ($q) => $q->forItem($data['item_id']));
@@ -71,7 +71,7 @@ class DoughSauceRecipeController extends Controller
             $query->effectiveOn($data['as_of'] ?? now()->toDateString());
         }
 
-        $rows = $query->get()->map(fn (DsRecipe $r) => [
+        $rows = $query->get()->map(fn (Dough_SauceRecipe $r) => [
             'id'                => $r->id,
             'item_id'           => $r->menuItem?->item_id,
             'menu_item_name'    => $r->menuItem?->menu_item_name,
@@ -100,8 +100,8 @@ class DoughSauceRecipeController extends Controller
         $data          = $request->validated();
         $effectiveFrom = $data['effective_from'] ?? now()->toDateString();
 
-        $recipes = DB::connection('aggregation')->transaction(function () use ($data, $effectiveFrom, $request) {
-            $item = DsMenuItem::updateOrCreate(
+        $recipes = DB::transaction(function () use ($data, $effectiveFrom, $request) {
+            $item = Dough_SauceMenuItem::updateOrCreate(
                 ['item_id' => $data['item_id']],
                 [
                     'menu_item_name'    => $data['menu_item_name'],
@@ -110,7 +110,7 @@ class DoughSauceRecipeController extends Controller
                 ],
             );
 
-            $ingredients = DsIngredient::query()
+            $ingredients = Dough_SauceIngredient::query()
                 ->whereIn('key', array_column($data['lines'], 'ingredient_key'))
                 ->get()
                 ->keyBy('key');
@@ -118,10 +118,10 @@ class DoughSauceRecipeController extends Controller
             $created = [];
 
             foreach ($data['lines'] as $line) {
-                $created[] = DsRecipe::updateOrCreate(
+                $created[] = Dough_SauceRecipe::updateOrCreate(
                     [
-                        'ds_menu_item_id'  => $item->id,
-                        'ds_ingredient_id' => $ingredients[$line['ingredient_key']]->id,
+                        'dough_sauce_menu_item_id'  => $item->id,
+                        'dough_sauce_ingredient_id' => $ingredients[$line['ingredient_key']]->id,
                         'effective_from'   => $effectiveFrom,
                     ],
                     [
@@ -137,7 +137,7 @@ class DoughSauceRecipeController extends Controller
         return response()->json([
             'item_id'        => $data['item_id'],
             'effective_from' => $effectiveFrom,
-            'recipes'        => array_map(fn (DsRecipe $r) => [
+            'recipes'        => array_map(fn (Dough_SauceRecipe $r) => [
                 'id'  => $r->id,
                 'qty' => (float) $r->qty,
             ], $recipes),
@@ -151,7 +151,7 @@ class DoughSauceRecipeController extends Controller
      * has to compute with the recipe that was in force then. Overwriting would
      * rewrite every plan and every score ever built on the old number, silently.
      */
-    public function update(UpdateRecipeRequest $request, DsRecipe $recipe): JsonResponse
+    public function update(UpdateRecipeRequest $request, Dough_SauceRecipe $recipe): JsonResponse
     {
         $data          = $request->validated();
         $effectiveFrom = Carbon::parse($data['effective_from'] ?? now()->toDateString());
@@ -169,12 +169,12 @@ class DoughSauceRecipeController extends Controller
             . $recipe->effective_from->toDateString() . ').'
         );
 
-        $new = DB::connection('aggregation')->transaction(function () use ($recipe, $data, $effectiveFrom, $request) {
+        $new = DB::transaction(function () use ($recipe, $data, $effectiveFrom, $request) {
             $recipe->update(['effective_to' => $effectiveFrom->copy()->subDay()->toDateString()]);
 
-            return DsRecipe::create([
-                'ds_menu_item_id'  => $recipe->ds_menu_item_id,
-                'ds_ingredient_id' => $recipe->ds_ingredient_id,
+            return Dough_SauceRecipe::create([
+                'dough_sauce_menu_item_id'  => $recipe->dough_sauce_menu_item_id,
+                'dough_sauce_ingredient_id' => $recipe->dough_sauce_ingredient_id,
                 'qty'              => $data['qty'],
                 'effective_from'   => $effectiveFrom->toDateString(),
                 'created_by'       => $this->actorId($request),
@@ -201,7 +201,7 @@ class DoughSauceRecipeController extends Controller
      * Deleting the row would change what past days compute to. Closing it leaves
      * history intact and simply stops it applying from tomorrow.
      */
-    public function destroy(Request $request, DsRecipe $recipe): JsonResponse
+    public function destroy(Request $request, Dough_SauceRecipe $recipe): JsonResponse
     {
         abort_if($recipe->effective_to !== null, 422, 'This recipe row is already closed.');
 

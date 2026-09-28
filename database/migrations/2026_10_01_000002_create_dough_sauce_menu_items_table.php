@@ -10,25 +10,23 @@ use Illuminate\Support\Facades\Schema;
  * A thin catalogue, not a copy of the menu: it exists so a recipe has something
  * stable to hang off, and so an item that sells but has no recipe can be spotted.
  *
- * Reference table on the `aggregation` connection — see ds_ingredients for why.
- * Not partitioned: ~93 rows, and it grows with the menu, not with time.
+ * Reference table on the application database — see dough_sauce_ingredients for
+ * why it is not in `aggregation`.
  *
  * Creates a new table only — daily_item_summary is read by the plan query but
  * never altered by this module.
  */
 return new class extends Migration
 {
-    protected $connection = 'aggregation';
-
     public function up(): void
     {
-        Schema::connection($this->connection)->create('ds_menu_items', function (Blueprint $table) {
+        Schema::create('dough_sauce_menu_items', function (Blueprint $table) {
             $table->id();
 
-            // Joins daily_item_summary.item_id, and matches its type exactly:
-            // varchar(20), not an integer. NEVER join on menu_item_name — it is
-            // free text, so "Crazy Bread" becoming "Crazy Bread(R)" would break the
-            // join silently and turn that item's dough into zero with no warning.
+            // Matches daily_item_summary.item_id exactly: varchar(20), not an
+            // integer. NEVER match on menu_item_name — it is free text, so
+            // "Crazy Bread" becoming "Crazy Bread(R)" would break the lookup
+            // silently and turn that item's dough into zero with no warning.
             $table->string('item_id', 20)->unique();
 
             $table->string('menu_item_name', 255);
@@ -47,6 +45,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::connection($this->connection)->dropIfExists('ds_menu_items');
+        Schema::dropIfExists('dough_sauce_menu_items');
     }
 };

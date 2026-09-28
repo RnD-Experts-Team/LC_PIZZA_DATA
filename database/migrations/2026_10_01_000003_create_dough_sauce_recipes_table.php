@@ -13,22 +13,25 @@ use Illuminate\Support\Facades\Schema;
  * are just `qty` values, visible and editable without touching code — hence
  * decimal, not integer.
  *
- * Reference table on the `aggregation` connection — see ds_ingredients for why.
- * Not partitioned: ~82 rows.
+ * Reference table on the application database — see dough_sauce_ingredients.
+ * ~82 rows.
  *
  * Creates a new table only.
  */
 return new class extends Migration
 {
-    protected $connection = 'aggregation';
-
     public function up(): void
     {
-        Schema::connection($this->connection)->create('ds_recipes', function (Blueprint $table) {
+        Schema::create('dough_sauce_recipes', function (Blueprint $table) {
             $table->id();
 
-            $table->foreignId('ds_menu_item_id')->constrained('ds_menu_items')->cascadeOnDelete();
-            $table->foreignId('ds_ingredient_id')->constrained('ds_ingredients')->cascadeOnDelete();
+            $table->foreignId('dough_sauce_menu_item_id')
+                ->constrained('dough_sauce_menu_items')
+                ->cascadeOnDelete();
+
+            $table->foreignId('dough_sauce_ingredient_id')
+                ->constrained('dough_sauce_ingredients')
+                ->cascadeOnDelete();
 
             // Fractions are real: half a 10 OZ ball for Crazy Puffs, two sauce
             // portions for a Deep Dish.
@@ -49,15 +52,19 @@ return new class extends Migration
             // One row per item + ingredient + start date. The start date is part of
             // the key precisely because a second row for the same pair is how a
             // change is recorded.
-            $table->unique(['ds_menu_item_id', 'ds_ingredient_id', 'effective_from'], 'ds_recipes_unique');
+            $table->unique(
+                ['dough_sauce_menu_item_id', 'dough_sauce_ingredient_id', 'effective_from'],
+                'dough_sauce_recipes_unique'
+            );
 
-            // The plan query filters on the date window for every joined row.
+            // The plan query filters the whole table down to the rows in force
+            // across its date window before multiplying.
             $table->index(['effective_from', 'effective_to']);
         });
     }
 
     public function down(): void
     {
-        Schema::connection($this->connection)->dropIfExists('ds_recipes');
+        Schema::dropIfExists('dough_sauce_recipes');
     }
 };

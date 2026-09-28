@@ -2,7 +2,7 @@
 
 namespace App\Http\Requests\DoughSauce;
 
-use App\Models\Aggregation\DsIngredient;
+use App\Models\Dough_SauceIngredient;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreRecipeRequest extends FormRequest
@@ -51,7 +51,7 @@ class StoreRecipeRequest extends FormRequest
                 return;
             }
 
-            $known   = DsIngredient::query()->whereIn('key', $keys)->pluck('key')->all();
+            $known   = Dough_SauceIngredient::query()->whereIn('key', $keys)->pluck('key')->all();
             $unknown = array_diff($keys, $known);
 
             if ($unknown) {

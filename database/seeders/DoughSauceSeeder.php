@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\Aggregation\DsIngredient;
+use App\Models\Dough_SauceIngredient;
 use Illuminate\Database\Seeder;
 
 /**
@@ -51,7 +51,7 @@ class DoughSauceSeeder extends Seeder
         ];
 
         foreach ($ingredients as $ingredient) {
-            DsIngredient::updateOrCreate(
+            Dough_SauceIngredient::updateOrCreate(
                 ['key' => $ingredient['key']],
                 $ingredient + ['active' => true],
             );

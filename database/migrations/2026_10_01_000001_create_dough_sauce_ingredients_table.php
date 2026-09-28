@@ -7,24 +7,26 @@ use Illuminate\Support\Facades\Schema;
 /**
  * The three ingredients the Dough & Sauce module tracks.
  *
- * Lives on the `aggregation` connection because the plan query joins it to
- * daily_item_summary, and separate databases cannot be joined in one statement.
- * Putting it on `operational` would force two queries and a multiplication in
- * PHP over thousands of rows.
+ * Lives on the application's own database, not `aggregation`. Everything in
+ * aggregation is output: rows a scheduled job computes from operational data and
+ * rebuilds on a schedule. This table is input — three rows a human maintains, the
+ * same kind of thing as `goal_metrics` or `tags`. Keeping the two apart is what
+ * makes it safe to say that nothing outside the aggregation pipeline writes to
+ * the aggregation database.
  *
- * Unlike every other table in this folder it is NOT partitioned and has no
- * composite primary key: those exist on the *_summary tables because their rows
- * are dated and grow forever. This one holds three rows and never grows.
+ * The plan query therefore cannot join this to daily_item_summary in one
+ * statement, and does not try to: it reads the three reference tables and the
+ * summary separately and multiplies in PHP. See DoughSaucePlanService. The three
+ * connections point at separate schemas with their own host settings, so a
+ * cross-database join could work locally and fail in production.
  *
  * Creates a new table only — nothing existing is read, altered or dropped.
  */
 return new class extends Migration
 {
-    protected $connection = 'aggregation';
-
     public function up(): void
     {
-        Schema::connection($this->connection)->create('ds_ingredients', function (Blueprint $table) {
+        Schema::create('dough_sauce_ingredients', function (Blueprint $table) {
             $table->id();
 
             // Stable code the API speaks. AuditApp stores this string on its plan
@@ -53,6 +55,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::connection($this->connection)->dropIfExists('ds_ingredients');
+        Schema::dropIfExists('dough_sauce_ingredients');
     }
 };

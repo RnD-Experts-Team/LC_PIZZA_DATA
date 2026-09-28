@@ -14,9 +14,6 @@ use Illuminate\Http\JsonResponse;
  * Returns what a store's sales say it needed on the same weekday, averaged over
  * the last four of them, per ingredient. It stops at `base`: the buffer on top is
  * a store manager's decision and belongs to AuditApp.
- *
- * Called from the browser, so it is behind the rate limiter as well as the auth
- * middleware — 44 store screens can open at once.
  */
 class DoughSaucePlanController extends Controller
 {

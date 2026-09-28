@@ -1,19 +1,20 @@
 <?php
 
-namespace App\Models\Aggregation;
+namespace App\Models;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * A menu item a recipe can attach to.
  *
- * `item_id` is the join key against daily_item_summary.item_id — never the name,
- * which is free text and would break the join the first time someone adds a
- * trademark symbol.
+ * `item_id` is what lines this up with daily_item_summary.item_id — never the
+ * name, which is free text and would break the match the first time someone adds
+ * a trademark symbol.
  */
-class DsMenuItem extends AggregationModel
+class Dough_SauceMenuItem extends Model
 {
-    protected $table = 'ds_menu_items';
+    protected $table = 'dough_sauce_menu_items';
 
     protected $fillable = [
         'item_id', 'menu_item_name', 'menu_item_account', 'active',
@@ -27,7 +28,7 @@ class DsMenuItem extends AggregationModel
 
     public function recipes(): HasMany
     {
-        return $this->hasMany(DsRecipe::class, 'ds_menu_item_id');
+        return $this->hasMany(Dough_SauceRecipe::class, 'dough_sauce_menu_item_id');
     }
 
     public function scopeForItem($query, string $itemId)

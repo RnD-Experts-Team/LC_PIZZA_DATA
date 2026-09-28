@@ -196,31 +196,27 @@ Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'u
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // Consumed by the Dough & Sauce module in AuditApp, whose browser calls these
 // directly. Read-only against daily_item_summary plus three small reference
-// tables of our own (ds_ingredients / ds_menu_items / ds_recipes); nothing in the
-// aggregation pipeline is written or altered.
-//
-// The plan endpoint is rate limited: 44 store screens can be open at once, and
-// every protected request here also makes a synchronous token check against the
-// auth server.
+// tables of our own (dough_sauce_ingredients / _menu_items / _recipes); nothing
+// in the aggregation pipeline is written or altered.
 
+// Ingredient units the four previous same-weekdays needed, averaged and divided —
+// plus the items that sold with no recipe, which the workbook this replaces
+// counted as zero without telling anyone.
+//
+// Store-scoped, so it takes the shape every store-scoped route in this project
+// takes: stores/{store_id}/<thing>, with no module prefix in front — the same as
+// stores/{store_id}/goals and stores/{store_id}/employee-debriefs. That is also
+// the shape pizzasys' auth_rules are written against (store_id_sources.path), so
+// the rule for this route is the ordinary one rather than a special case.
+Route::get('stores/{store_id}/daily-plan', [DoughSaucePlanController::class, 'dailyPlan'])
+    ->middleware('auth.token.store')
+    ->name('dough-sauce.store.daily-plan');
+
+// Recipe maintenance. The screen is in AuditApp — when the specialist sees an
+// item with no recipe there, these are what the fix button calls. No store_id:
+// recipes are the same for every store, so these keep the module prefix.
 Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () {
 
-    // Ingredient units the four previous same-weekdays needed, averaged and
-    // divided — plus the items that sold with no recipe, which the workbook this
-    // replaces counted as zero without telling anyone.
-    // Store in the PATH as {store_id}, like every other store-scoped route in this
-    // project (engine/stores/{store_id}/..., stores/{store_id}/goals). That is the
-    // shape pizzasys' auth_rules are written against: store_id_sources.path. A
-    // query parameter would work too — the resolver reads query sources as well —
-    // but it would need a rule of its own shape, and a rule that never gets written
-    // is a route nobody can call: pizzasys denies when nothing matches
-    // (allow_if_no_rule is false). Matching the convention removes that risk.
-    Route::get('stores/{store_id}/daily-plan', [DoughSaucePlanController::class, 'dailyPlan'])
-        ->middleware('throttle:dough-sauce')
-        ->name('dough-sauce.store.daily-plan');
-
-    // Recipe maintenance. The screen is in AuditApp — when the specialist sees an
-    // item with no recipe there, these are what the fix button calls.
     Route::get('ingredients', [DoughSauceRecipeController::class, 'ingredients'])->name('dough-sauce.ingredients');
     Route::get('recipes', [DoughSauceRecipeController::class, 'index'])->name('dough-sauce.recipes.index');
     Route::post('recipes', [DoughSauceRecipeController::class, 'store'])->name('dough-sauce.recipes.store');
