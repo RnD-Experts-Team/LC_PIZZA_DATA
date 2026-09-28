@@ -21,8 +21,7 @@ use App\Http\Controllers\API\{
     PricingKpiController,
     LcArchiveExportController,
     HnrPlusController,
-    DoughSaucePlanController,
-    DoughSauceRecipeController,
+    DoughSauceController,
 };
 
 
@@ -203,25 +202,26 @@ Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'u
 // plus the items that sold with no recipe, which the workbook this replaces
 // counted as zero without telling anyone.
 //
-// Store-scoped, so it takes the shape every store-scoped route in this project
-// takes: stores/{store_id}/<thing>, with no module prefix in front — the same as
-// stores/{store_id}/goals and stores/{store_id}/employee-debriefs. That is also
-// the shape pizzasys' auth_rules are written against (store_id_sources.path), so
-// the rule for this route is the ordinary one rather than a special case.
-Route::get('stores/{store_id}/daily-plan', [DoughSaucePlanController::class, 'dailyPlan'])
-    ->middleware('auth.token.store')
-    ->name('dough-sauce.store.daily-plan');
+// Store-scoped, so the path opens with stores/{store_id} and the module name comes
+// after it — never in front. That is the shape pizzasys' auth_rules are written
+// against (store_id_sources.path): the store is always in the same place, so the
+// rule for this route is the ordinary one rather than a special case.
+Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->group(function () {
+
+    Route::get('daily-plan', [DoughSauceController::class, 'dailyPlan'])->name('dough-sauce.store.daily-plan');
+});
 
 // Recipe maintenance. The screen is in AuditApp — when the specialist sees an
 // item with no recipe there, these are what the fix button calls. No store_id:
-// recipes are the same for every store, so these keep the module prefix.
+// a recipe is the same for all 44 stores, so there is no store segment to lead
+// with and the module name starts the path.
 Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () {
 
-    Route::get('ingredients', [DoughSauceRecipeController::class, 'ingredients'])->name('dough-sauce.ingredients');
-    Route::get('recipes', [DoughSauceRecipeController::class, 'index'])->name('dough-sauce.recipes.index');
-    Route::post('recipes', [DoughSauceRecipeController::class, 'store'])->name('dough-sauce.recipes.store');
+    Route::get('ingredients', [DoughSauceController::class, 'ingredients'])->name('dough-sauce.ingredients');
+    Route::get('recipes', [DoughSauceController::class, 'recipes'])->name('dough-sauce.recipes.index');
+    Route::post('recipes', [DoughSauceController::class, 'storeRecipe'])->name('dough-sauce.recipes.store');
     // Dates the change, never overwrites — so a past week still computes the way
     // it was planned.
-    Route::put('recipes/{recipe}', [DoughSauceRecipeController::class, 'update'])->name('dough-sauce.recipes.update');
-    Route::delete('recipes/{recipe}', [DoughSauceRecipeController::class, 'destroy'])->name('dough-sauce.recipes.destroy');
+    Route::put('recipes/{recipe}', [DoughSauceController::class, 'updateRecipe'])->name('dough-sauce.recipes.update');
+    Route::delete('recipes/{recipe}', [DoughSauceController::class, 'destroyRecipe'])->name('dough-sauce.recipes.destroy');
 });

@@ -3,30 +3,72 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\DoughSauce\DailyPlanRequest;
 use App\Http\Requests\DoughSauce\StoreRecipeRequest;
 use App\Http\Requests\DoughSauce\UpdateRecipeRequest;
 use App\Models\Dough_SauceIngredient;
 use App\Models\Dough_SauceMenuItem;
 use App\Models\Dough_SauceRecipe;
+use App\Services\DoughSauce\DoughSaucePlanService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Maintaining the bill of materials.
+ * Everything the Dough & Sauce module asks of this project.
  *
- * Recipes are not static — a new menu item every couple of months, a seasonal
- * promotion, a portion size that changes. Every one of those, left unrecorded,
- * becomes an item selling with no recipe, which is exactly the hole this module
- * exists to close. So there has to be a way to add one without a deploy.
+ * Two jobs, and they are the same job seen from two ends:
  *
- * The screen lives in AuditApp: when the specialist sees "3 items sold with no
- * recipe" there, the fix is a button on the same card rather than a different
- * system. These endpoints are what that button calls.
+ *   dailyPlan()  — reads the recipes and returns the ingredient figures
+ *   recipes()…   — maintains the recipes that reading depends on
+ *
+ * They sit together because the second exists only to serve the first: when the
+ * plan reports an item that sold with no recipe, the fix is one of the methods
+ * below. Splitting them across two files put one method in a class of its own and
+ * hid that relationship.
  */
-class DoughSauceRecipeController extends Controller
+class DoughSauceController extends Controller
 {
+    public function __construct(
+        private readonly DoughSaucePlanService $plans
+    ) {
+    }
+
+    // ── The plan ─────────────────────────────────────────────────────────────
+
+    /**
+     * The ingredient figures behind a day's production plan.
+     *
+     * Returns what a store's sales say it needed on the same weekday, averaged
+     * over the last four of them, per ingredient. It stops at `base`: the buffer
+     * on top is a store manager's decision and belongs to AuditApp.
+     */
+    public function dailyPlan(DailyPlanRequest $request, string $store_id): JsonResponse
+    {
+        $data = $request->validated();
+
+        // {store_id} is the franchise_store code exactly as daily_item_summary
+        // stores it — this project has no local Store model to resolve against.
+        return response()->json($this->plans->dailyPlan(
+            store:           $store_id,
+            date:            Carbon::parse($data['date']),
+            lookback:        $request->lookback(),
+            includeRefunded: $request->includeRefunded(),
+        ));
+    }
+
+    // ── The recipes ──────────────────────────────────────────────────────────
+    //
+    // Recipes are not static — a new menu item every couple of months, a seasonal
+    // promotion, a portion size that changes. Every one of those, left unrecorded,
+    // becomes an item selling with no recipe, which is exactly the hole this module
+    // exists to close. So there has to be a way to add one without a deploy.
+    //
+    // The screen lives in AuditApp: when the specialist sees "3 items sold with no
+    // recipe" there, the fix is a button on the same card rather than a different
+    // system. These are what that button calls.
+
     /** The three tracked ingredients, for building the form. */
     public function ingredients(): JsonResponse
     {
@@ -44,7 +86,7 @@ class DoughSauceRecipeController extends Controller
      * `as_of` defaults to today: without it the list would show every historical
      * row and read as though one item had three conflicting recipes.
      */
-    public function index(Request $request): JsonResponse
+    public function recipes(Request $request): JsonResponse
     {
         // `all` is normalised before validating for the same reason as
         // include_refunded on the plan request: ?all=true arrives as a string,
@@ -95,7 +137,7 @@ class DoughSauceRecipeController extends Controller
      * That fallback is the point: the items that need a recipe most are the ones
      * nobody has catalogued yet.
      */
-    public function store(StoreRecipeRequest $request): JsonResponse
+    public function storeRecipe(StoreRecipeRequest $request): JsonResponse
     {
         $data          = $request->validated();
         $effectiveFrom = $data['effective_from'] ?? now()->toDateString();
@@ -122,7 +164,7 @@ class DoughSauceRecipeController extends Controller
                     [
                         'dough_sauce_menu_item_id'  => $item->id,
                         'dough_sauce_ingredient_id' => $ingredients[$line['ingredient_key']]->id,
-                        'effective_from'   => $effectiveFrom,
+                        'effective_from'            => $effectiveFrom,
                     ],
                     [
                         'qty'        => $line['qty'],
@@ -151,7 +193,7 @@ class DoughSauceRecipeController extends Controller
      * has to compute with the recipe that was in force then. Overwriting would
      * rewrite every plan and every score ever built on the old number, silently.
      */
-    public function update(UpdateRecipeRequest $request, Dough_SauceRecipe $recipe): JsonResponse
+    public function updateRecipe(UpdateRecipeRequest $request, Dough_SauceRecipe $recipe): JsonResponse
     {
         $data          = $request->validated();
         $effectiveFrom = Carbon::parse($data['effective_from'] ?? now()->toDateString());
@@ -175,9 +217,9 @@ class DoughSauceRecipeController extends Controller
             return Dough_SauceRecipe::create([
                 'dough_sauce_menu_item_id'  => $recipe->dough_sauce_menu_item_id,
                 'dough_sauce_ingredient_id' => $recipe->dough_sauce_ingredient_id,
-                'qty'              => $data['qty'],
-                'effective_from'   => $effectiveFrom->toDateString(),
-                'created_by'       => $this->actorId($request),
+                'qty'                       => $data['qty'],
+                'effective_from'            => $effectiveFrom->toDateString(),
+                'created_by'                => $this->actorId($request),
             ]);
         });
 
@@ -201,7 +243,7 @@ class DoughSauceRecipeController extends Controller
      * Deleting the row would change what past days compute to. Closing it leaves
      * history intact and simply stops it applying from tomorrow.
      */
-    public function destroy(Request $request, Dough_SauceRecipe $recipe): JsonResponse
+    public function destroyRecipe(Request $request, Dough_SauceRecipe $recipe): JsonResponse
     {
         abort_if($recipe->effective_to !== null, 422, 'This recipe row is already closed.');
 
