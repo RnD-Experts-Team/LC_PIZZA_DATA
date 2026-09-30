@@ -62,6 +62,7 @@ Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class
 // type) for the business week containing {date}, plus trailing-week trend.
 // Override the trend window with ?trend_weeks= (default 6, max 12).
 Route::get('/reports/employees/{store}/{date}', [EmployeeReportController::class, 'show'])->middleware('auth.token.store');
+Route::get('/reports/scheduling-insights/{store}', [ReportsController::class, 'schedulingInsights'])->middleware('auth.token.store');
 
 Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware('auth.secret.key');
 Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware('auth.token.store');
