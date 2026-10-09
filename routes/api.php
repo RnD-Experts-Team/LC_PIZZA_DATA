@@ -21,6 +21,7 @@ use App\Http\Controllers\API\{
     PricingKpiController,
     LcArchiveExportController,
     HnrPlusController,
+    DoughSauceController,
 };
 
 
@@ -62,6 +63,7 @@ Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class
 // type) for the business week containing {date}, plus trailing-week trend.
 // Override the trend window with ?trend_weeks= (default 6, max 12).
 Route::get('/reports/employees/{store}/{date}', [EmployeeReportController::class, 'show'])->middleware('auth.token.store');
+Route::get('/reports/scheduling-insights/{store}', [ReportsController::class, 'schedulingInsights'])->middleware('auth.token.store');
 
 Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware('auth.secret.key');
 Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware('auth.token.store');
@@ -187,3 +189,40 @@ Route::post('/hnr-plus/upload-csv', [HnrPlusController::class, 'uploadCsv'])->mi
 
 Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware('auth.token.store');
 Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'uploadCustomerServiceCsv'])->middleware('auth.token.store');
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// DOUGH & SAUCE ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// Consumed by the Dough & Sauce module in AuditApp, whose browser calls these
+// directly. Read-only against daily_item_summary plus three small reference
+// tables of our own (dough_sauce_ingredients / _menu_items / _recipes); nothing
+// in the aggregation pipeline is written or altered.
+
+// Ingredient units the four previous same-weekdays needed, averaged and divided —
+// plus the items that sold with no recipe, which the workbook this replaces
+// counted as zero without telling anyone.
+//
+// Store-scoped, so the path opens with stores/{store_id} and the module name comes
+// after it — never in front. That is the shape pizzasys' auth_rules are written
+// against (store_id_sources.path): the store is always in the same place, so the
+// rule for this route is the ordinary one rather than a special case.
+Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->group(function () {
+
+    Route::get('daily-plan', [DoughSauceController::class, 'dailyPlan'])->name('dough-sauce.store.daily-plan');
+});
+
+// Recipe maintenance. The screen is in AuditApp — when the specialist sees an
+// item with no recipe there, these are what the fix button calls. No store_id:
+// a recipe is the same for all 44 stores, so there is no store segment to lead
+// with and the module name starts the path.
+Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () {
+
+    Route::get('ingredients', [DoughSauceController::class, 'ingredients'])->name('dough-sauce.ingredients');
+    Route::get('recipes', [DoughSauceController::class, 'recipes'])->name('dough-sauce.recipes.index');
+    Route::post('recipes', [DoughSauceController::class, 'storeRecipe'])->name('dough-sauce.recipes.store');
+    // Dates the change, never overwrites — so a past week still computes the way
+    // it was planned.
+    Route::put('recipes/{recipe}', [DoughSauceController::class, 'updateRecipe'])->name('dough-sauce.recipes.update');
+    Route::delete('recipes/{recipe}', [DoughSauceController::class, 'destroyRecipe'])->name('dough-sauce.recipes.destroy');
+});

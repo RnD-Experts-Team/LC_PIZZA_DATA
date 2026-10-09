@@ -2090,6 +2090,24 @@
             }
         },
 
+        "/reports/scheduling-insights/{store}": {
+            "get": {
+                "tags": ["Reports"],
+                "summary": "Hourly sales history per weekday, for the scheduling screen",
+                "description": "Average sales, orders and customers for each hour of each weekday (Tuesday first) over a window of business weeks. Dates with no sales are left out of the averages. Each metric carries avg (all weeks) and typical (odd weeks left out) plus the odd weeks as anomalies. Without dates, the window is the four complete Tuesday-Monday weeks before the current week.",
+                "operationId": "schedulingInsights",
+                "security": [{ "BearerAuth": [] }],
+                "parameters": [
+                    { "name": "store", "in": "path", "required": true, "schema": { "type": "string" } },
+                    { "name": "start_date", "in": "query", "required": false, "description": "Window start. Required with end_date.", "schema": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } },
+                    { "name": "end_date", "in": "query", "required": false, "description": "Window end. Required with start_date.", "schema": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } }
+                ],
+                "responses": {
+                    "200": { "description": "Scheduling insights payload", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+                    "422": { "description": "Validation error", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } }
+                }
+            }
+        },
         "/reports/multi-dashboard": {
             "post": {
                 "tags": ["Reports"],

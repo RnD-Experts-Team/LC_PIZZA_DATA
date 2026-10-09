@@ -7,12 +7,14 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Aggregation\HourlyStoreSummary;
 use App\Services\Aggregation\IntelligentAggregationService;
+use App\Services\Analytics\SchedulingInsightsService;
 use App\Services\Analytics\SummaryQueryService;
 use App\Services\Database\DatabaseRouter;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -202,6 +204,32 @@ class ReportsController extends Controller
     private function remember(string $key, callable $fn): mixed
     {
         return $this->memo[$key] ??= $fn();
+    }
+
+    /**
+     * GET /api/reports/scheduling-insights/{store}?start_date=&end_date=
+     *
+     * Hourly sales per weekday over a window of business weeks, for the
+     * scheduling screen. Without dates: the four complete Tuesday-Monday weeks
+     * before the week containing today.
+     */
+    public function schedulingInsights(Request $request, SchedulingInsightsService $insights, string $store): JsonResponse
+    {
+        $dates = $request->validate([
+            'start_date' => ['nullable', 'date_format:Y-m-d', 'required_with:end_date'],
+            'end_date' => ['nullable', 'date_format:Y-m-d', 'required_with:start_date', 'after_or_equal:start_date'],
+        ]);
+
+        if (isset($dates['start_date'])) {
+            $start = CarbonImmutable::parse($dates['start_date'])->startOfDay();
+            $end = CarbonImmutable::parse($dates['end_date'])->startOfDay();
+        } else {
+            $thisWeek = CarbonImmutable::today()->startOfWeek(CarbonInterface::TUESDAY);
+            $start = $thisWeek->subDays(28);
+            $end = $thisWeek->subDay();
+        }
+
+        return response()->json($insights->getInsights($store, $start, $end));
     }
 
     /**
