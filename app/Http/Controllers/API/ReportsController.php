@@ -655,6 +655,87 @@ class ReportsController extends Controller
         ];
     }
 
+    /**
+     * GET /api/reports/upselling?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=03795,03796]
+     *
+     * `stores` is a comma-separated list or an array, in the query string or the body.
+     * Left out (or "all"), it returns every store that has data in the range.
+     */
+    public function upsellingReport(Request $request): JsonResponse
+    {
+        $input = $request->validate([
+            'start_date' => ['required', 'date_format:Y-m-d'],
+            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'stores' => ['nullable'],
+            'stores.*' => ['string'],
+        ]);
+
+        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
+        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
+
+        if ($start->diffInDays($end) + 1 > 366) {
+            throw ValidationException::withMessages(['end_date' => 'Date range must not exceed 366 days']);
+        }
+
+        $stores = $this->parseStoreList($input['stores'] ?? null);
+
+        if (count($stores) > 100) {
+            throw ValidationException::withMessages(['stores' => 'Cannot request more than 100 stores']);
+        }
+
+        return response()->json($this->buildUpsellingReport($stores, $start, $end));
+    }
+
+    /** @return string[] store numbers; empty means all stores */
+    private function parseStoreList(mixed $value): array
+    {
+        $items = is_array($value) ? $value : explode(',', (string) $value);
+        $items = array_values(array_unique(array_filter(array_map('trim', $items), 'strlen')));
+
+        return $items === ['all'] ? [] : $items;
+    }
+
+    private function buildUpsellingReport(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        if (empty($stores)) {
+            $stores = $this->resolveStores('all', $start, $end);
+            sort($stores);
+        }
+
+        $byStore = [];
+        foreach ($stores as $store) {
+            $byStore[$store] = $this->upsellingBlocksForStore($store, $start, $end);
+        }
+
+        return [
+            'filtering' => [
+                'stores' => $stores,
+                'store_count' => count($stores),
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+            ],
+            'by_store' => $byStore,
+        ];
+    }
+
+    /** Same upselling and upselling_score values the dashboard returns, for one range and without building the rest of it. */
+    private function upsellingBlocksForStore(string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $upselling = $this->upsellingForRange($store, $start, $end);
+        $upsellingScore = $this->upsellingScoreForItems($upselling);
+
+        return [
+            'upselling' => [
+                'range' => $upselling,
+                'total_upselling_range' => $this->totalUpsellingUnits($upselling),
+            ],
+            'upselling_score' => [
+                'range' => $upsellingScore,
+                'total_upselling_score_range' => $this->totalUpsellingScore($upsellingScore),
+            ],
+        ];
+    }
+
     public function portioningReport(string $store, string $date): JsonResponse
     {
         $this->validateInputs($store, $date);
