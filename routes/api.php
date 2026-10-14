@@ -62,6 +62,8 @@ Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class
 Route::get('/reports/upselling', [ReportsController::class, 'upsellingReport'])->middleware('auth.secret.key');
 // Port of LC_Pizza's /reports/store: ?from=&to=[&franchise_store=][&without_bundle=1], no store = all stores.
 Route::get('/reports/store', [ReportsController::class, 'storeReport'])->middleware('auth.secret.key');
+// Port of LC_Pizza's /reports/sold-with-weekly-by-store: ?from=[&to=][&bucket=][&without_bundle=1], all stores, Tuesday weeks.
+Route::get('/reports/sold-with-weekly-by-store', [ReportsController::class, 'soldWithWeeklyByStore'])->middleware('auth.secret.key');
 
 // Employee report: store-wide roster + debrief activity (counts per debrief
 // type) for the business week containing {date}, plus trailing-week trend.

@@ -1328,6 +1328,169 @@ class ReportsController extends Controller
         return $den != 0.0 ? $num / $den : 0.0;
     }
 
+    /**
+     * GET /api/reports/sold-with-weekly-by-store?from=YYYY-MM-DD[&to=YYYY-MM-DD][&bucket=in_store][&without_bundle=1]
+     *
+     * Ported from LC_Pizza. Per store and Tuesday-start week: items sold on orders
+     * that also had a pizza (crazy bread, cookies, crazy sauce, wings, 2L and 20oz
+     * drinks), the pizza count, and EMP pepperoni / cheese counts. `to` defaults to
+     * from + 6 weeks; the first week starts on the Tuesday on or before `from`.
+     */
+    public function soldWithWeeklyByStore(Request $request): JsonResponse
+    {
+        $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['nullable', 'date'],
+            'bucket' => ['nullable', 'string'],
+        ]);
+
+        $from = CarbonImmutable::parse((string) $request->input('from'))->startOfDay();
+        $to = $request->filled('to')
+            ? CarbonImmutable::parse((string) $request->input('to'))->startOfDay()
+            : $from->addWeeks(6);
+        $bucketKey = strtolower((string) $request->input('bucket', 'in_store'));
+        $withoutBundle = $request->boolean('without_bundle');
+        $rules = self::STORE_REPORT_BUCKETS[$bucketKey] ?? self::STORE_REPORT_BUCKETS['in_store'];
+
+        $cookieIds = ['101288', '101289'];
+        $sauceIds = ['206117', '103002'];
+        $bev2lIds = ['204200', '204234'];
+        $bev20ozIds = ['204100'];
+        $countIds = ['201106', '201128'];
+
+        $offset = ($from->dayOfWeekIso + 5) % 7; // Tuesday start
+        $weekStart = $from->subDays($offset);
+
+        $stores = [];
+        for (; $weekStart->lte($to); $weekStart = $weekStart->addDays(7)) {
+            $weekEnd = $weekStart->addDays(6);
+            if ($weekEnd->gt($to)) {
+                $weekEnd = $to;
+            }
+
+            $sold = [];
+            $pizzaBase = [];
+            $itemCounts = [];
+
+            foreach ($this->storeReportSources('order_line', null, $weekStart, $weekEnd) as $base) {
+                if ($rules['placed'] !== null) {
+                    $base->whereIn('order_placed_method', $rules['placed']);
+                }
+                if ($rules['fulfilled'] !== null) {
+                    $base->whereIn('order_fulfilled_method', $rules['fulfilled']);
+                }
+                if ($withoutBundle) {
+                    $this->storeReportWithoutBundle($base);
+                }
+
+                $pizzaOrders = (clone $base)->where('is_pizza', 1)->select('order_id')->distinct();
+
+                $soldRows = (clone $base)
+                    ->whereIn('order_id', $pizzaOrders)
+                    ->where(fn(Builder $q) => $q
+                        ->where('is_bread', 1)
+                        ->orWhereIn('item_id', $cookieIds)
+                        ->orWhereIn('item_id', $sauceIds)
+                        ->orWhere('is_wings', 1)
+                        ->orWhereIn('item_id', $bev2lIds)
+                        ->orWhereIn('item_id', $bev20ozIds))
+                    ->selectRaw("franchise_store, item_id, COALESCE(menu_item_name, '') AS menu_item_name, SUM(quantity) AS units_sold, MAX(is_bread) AS is_bread, MAX(is_wings) AS is_wings")
+                    ->groupBy('franchise_store', 'item_id', 'menu_item_name')
+                    ->orderBy('franchise_store')
+                    ->orderByDesc('units_sold')
+                    ->get();
+
+                foreach ($soldRows as $row) {
+                    $store = (string) $row->franchise_store;
+                    if ($store === '') {
+                        continue;
+                    }
+                    $itemId = (string) $row->item_id;
+                    $category = match (true) {
+                        in_array($itemId, $sauceIds, true) => 'crazy_sauce',
+                        in_array($itemId, $cookieIds, true) => 'cookies',
+                        in_array($itemId, $bev2lIds, true) => 'bev_2l',
+                        in_array($itemId, $bev20ozIds, true) => 'bev_20oz',
+                        (int) $row->is_bread === 1 => 'crazy_bread',
+                        (int) $row->is_wings === 1 => 'wings',
+                        default => null,
+                    };
+                    if ($category === null) {
+                        continue;
+                    }
+                    $key = $itemId . '|' . $row->menu_item_name;
+                    $sold[$store][$category][$key] ??= ['item_id' => (int) $row->item_id, 'name' => (string) $row->menu_item_name, 'units' => 0];
+                    $sold[$store][$category][$key]['units'] += (int) $row->units_sold;
+                }
+
+                foreach ((clone $base)->where('is_pizza', 1)->selectRaw('franchise_store, SUM(quantity) AS pizza_units')->groupBy('franchise_store')->get() as $row) {
+                    if ((string) $row->franchise_store !== '') {
+                        $pizzaBase[(string) $row->franchise_store] = ($pizzaBase[(string) $row->franchise_store] ?? 0) + (int) $row->pizza_units;
+                    }
+                }
+
+                foreach ((clone $base)->whereIn('item_id', $countIds)->selectRaw('franchise_store, item_id, SUM(quantity) AS units')->groupBy('franchise_store', 'item_id')->get() as $row) {
+                    if ((string) $row->franchise_store !== '') {
+                        $itemCounts[(string) $row->franchise_store][(string) $row->item_id] = ($itemCounts[(string) $row->franchise_store][(string) $row->item_id] ?? 0) + (int) $row->units;
+                    }
+                }
+            }
+
+            $storeKeys = array_unique([...array_keys($sold), ...array_keys($pizzaBase), ...array_keys($itemCounts)]);
+            sort($storeKeys);
+
+            $zeroFill = function (array $rows, array $ids): array {
+                $filled = [];
+                foreach ($ids as $id) {
+                    $match = array_values(array_filter($rows, fn($r) => $r['item_id'] === (int) $id));
+                    usort($match, fn($a, $b) => $b['units'] <=> $a['units']);
+                    $filled[] = ['item_id' => (int) $id, 'name' => $match[0]['name'] ?? '', 'units' => (int) ($match[0]['units'] ?? 0)];
+                }
+
+                return $filled;
+            };
+
+            foreach ($storeKeys as $store) {
+                $byCategory = $sold[$store] ?? [];
+                $list = fn(string $category): array => array_values($byCategory[$category] ?? []);
+                $byUnits = function (array $rows): array {
+                    usort($rows, fn($a, $b) => $b['units'] <=> $a['units']);
+
+                    return $rows;
+                };
+
+                $stores[$store] ??= ['store' => $store, 'weeks' => []];
+                $stores[$store]['weeks'][] = [
+                    'week_start' => $weekStart->toDateString(),
+                    'week_end' => $weekEnd->toDateString(),
+                    'sold_with' => [
+                        'crazy_bread' => $byUnits($list('crazy_bread')),
+                        'cookies' => $zeroFill($list('cookies'), $cookieIds),
+                        'crazy_sauce' => $zeroFill($list('crazy_sauce'), $sauceIds),
+                        'wings' => $byUnits($list('wings')),
+                        'bev_2l' => $zeroFill($list('bev_2l'), $bev2lIds),
+                        'bev_20oz' => $zeroFill($list('bev_20oz'), $bev20ozIds),
+                    ],
+                    'pizza_base' => (int) ($pizzaBase[$store] ?? 0),
+                    'item_counts' => [
+                        '201106' => (int) ($itemCounts[$store]['201106'] ?? 0),
+                        '201128' => (int) ($itemCounts[$store]['201128'] ?? 0),
+                    ],
+                ];
+            }
+        }
+
+        ksort($stores);
+
+        return response()->json([
+            'from' => $from->toDateString(),
+            'to' => $to->toDateString(),
+            'bucket' => $bucketKey,
+            'without_bundle' => $withoutBundle,
+            'stores' => array_values($stores),
+        ]);
+    }
+
     public function portioningReport(string $store, string $date): JsonResponse
     {
         $this->validateInputs($store, $date);
