@@ -94,6 +94,90 @@ class ReportsController extends Controller
     ];
 
     // -----------------------------------------------------------------
+    // Store report (GET /reports/store), ported from LC_Pizza's
+    // StoreOverviewService + ItemsAndWithPizzaFusedService.
+    // -----------------------------------------------------------------
+
+    /** Overview buckets; `placed` order is the output order of sales_by_method. */
+    private const STORE_REPORT_OVERVIEW_BUCKETS = [
+        'in_store' => [
+            'label' => 'In Store',
+            'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
+            'fulfilled' => ['Register', 'Drive-Thru'],
+        ],
+        'lc_pickup' => [
+            'label' => 'LC Pickup',
+            'placed' => ['Website', 'Mobile'],
+            'fulfilled' => ['Register', 'Drive-Thru', 'In Store Only'],
+        ],
+        'lc_delivery' => [
+            'label' => 'LC Delivery',
+            'placed' => ['Website', 'Mobile', 'SoundHoundAgent', 'CallCenterAgent'],
+            'fulfilled' => ['Delivery'],
+        ],
+        'third_party' => [
+            'label' => '3rd Party',
+            'placed' => ['UberEats', 'Grubhub', 'DoorDash'],
+            'fulfilled' => ['Delivery'],
+        ],
+    ];
+
+    /** Item breakdown / sold-with buckets. The named ones never overlap; 'all' has no channel filter. */
+    private const STORE_REPORT_BUCKETS = [
+        'in_store' => [
+            'label' => 'In Store',
+            'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
+            'fulfilled' => ['Register', 'Drive-Thru'],
+        ],
+        'lc_pickup' => [
+            'label' => 'LC Pickup',
+            'placed' => ['Website', 'Mobile'],
+            'fulfilled' => ['Register', 'Drive-Thru', 'In Store Only'],
+        ],
+        'lc_delivery' => [
+            'label' => 'LC Delivery',
+            'placed' => ['Website', 'Mobile', 'CallCenterAgent', 'SoundHoundAgent'],
+            'fulfilled' => ['Delivery'],
+        ],
+        'third_party' => [
+            'label' => '3rd Party',
+            'placed' => ['UberEats', 'Grubhub', 'DoorDash'],
+            'fulfilled' => ['Delivery'],
+        ],
+        'all' => [
+            'label' => 'All Buckets',
+            'placed' => null,
+            'fulfilled' => null,
+        ],
+    ];
+
+    /** Channels unit prices are read from: [placed, fulfilled]. */
+    private const STORE_REPORT_PRICE_CHANNELS = [
+        'register' => [['Register'], ['Register']],
+        'online_pickup' => [['Website', 'Mobile'], ['Register']],
+        'online_delivery' => [['Website', 'Mobile'], ['Delivery']],
+        'doordash' => [['DoorDash'], ['Delivery']],
+    ];
+
+    private const STORE_REPORT_BUCKET_PRICE_CHANNEL = [
+        'in_store' => 'register',
+        'lc_pickup' => 'online_pickup',
+        'lc_delivery' => 'online_delivery',
+        'third_party' => 'doordash',
+        'all' => 'register',
+    ];
+
+    /** Unit prices for "All" stores are read from this store. */
+    private const STORE_REPORT_PRICE_STORE_FALLBACK = '03795-00001';
+
+    private const STORE_REPORT_FLAGS = ['is_pizza', 'is_bread', 'is_wings', 'is_beverages', 'is_crazy_puffs', 'is_caesar_dip'];
+    private const STORE_REPORT_SIDES_IDS = [206117, 103002];
+    private const STORE_REPORT_COOKIE_IDS = [101288, 101289];
+    /** Used when no caesar dip sold in the range. */
+    private const STORE_REPORT_CAESAR_DIP_IDS_FALLBACK = [206117, 206103, 206104, 206108, 206101];
+    private const STORE_REPORT_ICB_IDS = [203003, 103003];
+
+    // -----------------------------------------------------------------
     // Store score configuration
     //
     // The store score is a 0–100 weekly (week-to-date) performance grade.
@@ -734,6 +818,514 @@ class ReportsController extends Controller
                 'total_upselling_score_range' => $this->totalUpsellingScore($upsellingScore),
             ],
         ];
+    }
+
+    /**
+     * GET /api/reports/store?from=YYYY-MM-DD&to=YYYY-MM-DD[&franchise_store=03795-00016][&without_bundle=1]
+     *
+     * Same response as LC_Pizza's /api/reports/store: channel overview, item
+     * breakdown and sold-with-pizza per bucket. franchise_store left out (or
+     * "All") covers every store. Each part is one grouped query per routed
+     * table instead of LC_Pizza's row-by-row PHP passes.
+     */
+    public function storeReport(Request $request): JsonResponse
+    {
+        $request->validate([
+            'franchise_store' => ['nullable', 'string', 'max:20'],
+            'from' => ['required', 'date', 'before_or_equal:to'],
+            'to' => ['required', 'date', 'after_or_equal:from'],
+        ]);
+
+        $store = $request->input('franchise_store');
+        $from = (string) $request->input('from');
+        $to = (string) $request->input('to');
+
+        $start = CarbonImmutable::parse($from)->startOfDay();
+        $end = CarbonImmutable::parse($to)->startOfDay();
+        $storeFilter = ($store !== null && $store !== '' && strtolower($store) !== 'all') ? $store : null;
+
+        $fused = $this->storeReportItemsAndSoldWith($storeFilter, $start, $end, $request->boolean('without_bundle'));
+
+        return response()->json([
+            'store' => $store,
+            'from' => $from,
+            'to' => $to,
+            'data' => [
+                'overview' => $this->storeReportOverview($storeFilter, $start, $end),
+                ...$fused,
+            ],
+        ]);
+    }
+
+    /**
+     * LC_Pizza reads channel_data, whose Sales / Order_Count rows are per-day
+     * sums of detail_orders royalty_obligation / customer_count by placed x
+     * fulfilled method, so this sums detail_orders directly: one column per
+     * bucket method, money in cents so the sums stay exact.
+     */
+    private function storeReportOverview(?string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $columns = [];
+        $placedAll = [];
+        $fulfilledAll = [];
+
+        foreach (self::STORE_REPORT_OVERVIEW_BUCKETS as $key => $rules) {
+            $fulfilledIn = $this->storeReportSqlIn('order_fulfilled_method', $rules['fulfilled']);
+
+            foreach ($rules['placed'] as $i => $method) {
+                $match = $this->storeReportSqlIn('order_placed_method', [$method]) . " AND {$fulfilledIn}";
+                $columns[] = "COALESCE(SUM(CASE WHEN {$match} THEN royalty_obligation END), 0) * 100 AS {$key}_sales_{$i}";
+                $columns[] = "COALESCE(SUM(CASE WHEN {$match} THEN customer_count END), 0) AS {$key}_count_{$i}";
+            }
+
+            array_push($placedAll, ...$rules['placed']);
+            array_push($fulfilledAll, ...$rules['fulfilled']);
+        }
+
+        $totals = [];
+        foreach ($this->storeReportSources('detail_orders', $store, $start, $end) as $query) {
+            $row = (array) $query
+                ->whereIn('order_placed_method', array_values(array_unique($placedAll)))
+                ->whereIn('order_fulfilled_method', array_values(array_unique($fulfilledAll)))
+                ->selectRaw(implode(', ', $columns))
+                ->first();
+
+            foreach ($row as $alias => $value) {
+                $totals[$alias] = ($totals[$alias] ?? 0) + (int) $value;
+            }
+        }
+
+        $buckets = [];
+        foreach (self::STORE_REPORT_OVERVIEW_BUCKETS as $key => $rules) {
+            $salesByMethod = [];
+            $countByMethod = [];
+            foreach ($rules['placed'] as $i => $method) {
+                $salesByMethod[$method] = (float) (($totals["{$key}_sales_{$i}"] ?? 0) / 100);
+                $countByMethod[$method] = (int) ($totals["{$key}_count_{$i}"] ?? 0);
+            }
+
+            $orderCountTotal = (float) array_sum($countByMethod);
+            $totalSales = array_sum($salesByMethod);
+
+            $methodShare = [];
+            foreach ($salesByMethod as $method => $sum) {
+                $methodShare[$method] = $this->storeReportDivide($sum, $totalSales);
+            }
+
+            $buckets[$key] = [
+                'sales_by_method' => $salesByMethod,
+                'count_by_method' => $countByMethod,
+                'order_count_total' => $orderCountTotal,
+                'total_sales' => (float) $totalSales,
+                'avg_ticket' => $this->storeReportDivide($totalSales, $orderCountTotal),
+                'method_share' => $methodShare,
+                'label' => $rules['label'],
+            ];
+        }
+
+        $sumOrderCounts = array_sum(array_column($buckets, 'order_count_total'));
+        $sumBucketSales = array_sum(array_column($buckets, 'total_sales'));
+
+        $bucketTotals = [];
+        $bucketShares = [];
+        foreach ($buckets as $key => $data) {
+            $buckets[$key]['customers_share'] = $this->storeReportDivide($data['order_count_total'], $sumOrderCounts);
+            $bucketTotals[$key] = $data['total_sales'];
+            $bucketShares[$key] = $this->storeReportDivide($data['total_sales'], $sumBucketSales);
+        }
+
+        return [
+            'buckets' => $buckets,
+            'totals' => [
+                'bucket_totals' => $bucketTotals,
+                'order_count_all_buckets' => (float) $sumOrderCounts,
+                'avg_ticket_overall' => $this->storeReportDivide($sumBucketSales, $sumOrderCounts),
+                'bucket_sales_share' => $bucketShares,
+            ],
+        ];
+    }
+
+    /** item_breakdown, sold_with_pizza and all_items_union of the store report. */
+    private function storeReportItemsAndSoldWith(?string $store, CarbonImmutable $start, CarbonImmutable $end, bool $withoutBundle): array
+    {
+        $sources = $this->storeReportSources('order_line', $store, $start, $end);
+        if ($withoutBundle) {
+            foreach ($sources as $query) {
+                $this->storeReportWithoutBundle($query);
+            }
+        }
+
+        $bucketCase = $this->storeReportBucketCase();
+        $flagColumns = implode(', ', array_map(fn(string $flag) => "MAX({$flag} = 1) AS {$flag}", self::STORE_REPORT_FLAGS));
+
+        // One pass per table: per item and bucket totals, the first named line
+        // (lowest id) and the flags the category id lists are built from.
+        $flagIds = array_fill_keys(self::STORE_REPORT_FLAGS, []);
+        $groups = [];
+        foreach ($sources as $rank => $query) {
+            $rows = (clone $query)
+                ->selectRaw("
+                    item_id,
+                    {$bucketCase} AS bucket,
+                    SUM(COALESCE(net_amount, 0)) * 100 AS sales_cents,
+                    SUM(COALESCE(quantity, 0)) AS units,
+                    MIN(CASE WHEN CHAR_LENGTH(menu_item_name) > 0 THEN CONCAT(LPAD(id, 20, '0'), menu_item_name) END) AS first_name,
+                    {$flagColumns}
+                ")
+                ->groupBy('item_id', 'bucket')
+                ->get();
+
+            foreach ($rows as $row) {
+                if ($row->item_id !== null) {
+                    foreach (self::STORE_REPORT_FLAGS as $flag) {
+                        if ((int) $row->{$flag} === 1) {
+                            $flagIds[$flag][(int) $row->item_id] = true;
+                        }
+                    }
+                }
+                $groups[] = [$rank, $row];
+            }
+        }
+
+        $idsFor = function (string $flag) use ($flagIds): array {
+            $ids = array_keys($flagIds[$flag]);
+            sort($ids);
+            return $ids;
+        };
+
+        $pizzaIds = $idsFor('is_pizza');
+        $breadIds = $idsFor('is_bread');
+        $wingsIds = $idsFor('is_wings');
+        $beverageIds = $idsFor('is_beverages');
+        $puffsIds = $idsFor('is_crazy_puffs');
+        $dipIds = $idsFor('is_caesar_dip') ?: self::STORE_REPORT_CAESAR_DIP_IDS_FALLBACK;
+
+        $relevantIds = array_values(array_unique(array_merge(
+            $pizzaIds,
+            $breadIds,
+            $wingsIds,
+            $puffsIds,
+            self::STORE_REPORT_COOKIE_IDS,
+            $beverageIds,
+            self::STORE_REPORT_SIDES_IDS,
+            $dipIds,
+            self::STORE_REPORT_ICB_IDS
+        )));
+        $relevantIdStr = array_map('strval', $relevantIds);
+        $relevantIdFlip = array_fill_keys($relevantIdStr, true);
+
+        // Fold the item groups into buckets; every group also counts for 'all'.
+        $bucketKeys = array_keys(self::STORE_REPORT_BUCKETS);
+        $byBucket = array_fill_keys($bucketKeys, ['cents' => [], 'units' => [], 'name' => []]);
+        $seenAnywhere = [];
+        foreach ($groups as [$rank, $row]) {
+            $itemIdS = (string) ($row->item_id ?? '');
+            if (!isset($relevantIdFlip[$itemIdS])) {
+                continue;
+            }
+            $seenAnywhere[$itemIdS] = true;
+
+            foreach ($row->bucket === 'none' ? ['all'] : [$row->bucket, 'all'] as $key) {
+                $byBucket[$key]['cents'][$itemIdS] = ($byBucket[$key]['cents'][$itemIdS] ?? 0) + (int) $row->sales_cents;
+                $byBucket[$key]['units'][$itemIdS] = ($byBucket[$key]['units'][$itemIdS] ?? 0) + (int) $row->units;
+
+                if ($row->first_name === null) {
+                    continue;
+                }
+                // Archive (rank 0) holds the older lines, then lowest id wins.
+                $current = $byBucket[$key]['name'][$itemIdS] ?? null;
+                if ($current === null || $rank < $current[0] || ($rank === $current[0] && strcmp($row->first_name, $current[1]) < 0)) {
+                    $byBucket[$key]['name'][$itemIdS] = [$rank, (string) $row->first_name];
+                }
+            }
+        }
+
+        $unitPrices = $this->storeReportUnitPrices($store ?? self::STORE_REPORT_PRICE_STORE_FALLBACK, $start, $end, $relevantIdStr);
+        $soldWith = $this->storeReportSoldWithUnits($sources, $relevantIdStr);
+
+        $itemRes = ['buckets' => []];
+        $soldRes = ['buckets' => []];
+        $bucketRaw = [];
+
+        foreach (self::STORE_REPORT_BUCKETS as $key => $rules) {
+            $label = $rules['label'];
+            $unitPriceByItem = $unitPrices[self::STORE_REPORT_BUCKET_PRICE_CHANNEL[$key]];
+            $sumByItem = array_map(fn(int $cents) => $cents / 100, $byBucket[$key]['cents']);
+            $countByItem = $byBucket[$key]['units'];
+            $nameByItem = array_map(fn(array $name) => substr($name[1], 20), $byBucket[$key]['name']);
+
+            $rows = fn(array $ids) => $this->storeReportItemRows($ids, $sumByItem, $countByItem, $nameByItem, $unitPriceByItem);
+
+            $itemRes['buckets'][$key] = [
+                'label' => $label,
+                'pizza_top10' => array_slice($rows($pizzaIds), 0, 10),
+                'bread_top3' => array_slice($rows($breadIds), 0, 3),
+                'wings' => $rows($wingsIds),
+                'crazy_puffs' => $rows($puffsIds),
+                'cookies' => $rows(self::STORE_REPORT_COOKIE_IDS),
+                'beverages' => $rows($beverageIds),
+                'sides' => $rows(self::STORE_REPORT_SIDES_IDS),
+                'caesar_dips' => $rows($dipIds),
+                'top15_overall' => array_slice($rows($relevantIds), 0, 15),
+                'all_items_seen' => [],
+            ];
+
+            $units = $soldWith[$key];
+            $pizzaUnitsBase = $units['pizza_base'];
+            $den = $pizzaUnitsBase ?: 1;
+            $percentages = [];
+            foreach ($units as $name => $count) {
+                if ($name !== 'pizza_base') {
+                    $percentages[$name] = $pizzaUnitsBase ? $count / $den : 0.0;
+                }
+            }
+
+            $soldRes['buckets'][$key] = [
+                'label' => $label,
+                'units' => $units,
+                'percentages' => $percentages,
+            ];
+
+            $bucketRaw[$key] = [$sumByItem, $countByItem, $nameByItem, $unitPriceByItem];
+        }
+
+        // Every relevant item seen in any bucket, zero-filled per bucket.
+        $unionIds = array_keys($seenAnywhere);
+        sort($unionIds, SORT_STRING);
+
+        foreach ($bucketKeys as $key) {
+            [$sumBy, $countBy, $nameBy, $unitPriceByItem] = $bucketRaw[$key];
+
+            $rows = [];
+            foreach ($unionIds as $id) {
+                $rows[] = [
+                    'item_id' => (int) $id,
+                    'menu_item_name' => $nameBy[$id] ?? '',
+                    'unit_price' => (float) ($unitPriceByItem[$id] ?? 0.0),
+                    'total_sales' => (float) ($sumBy[$id] ?? 0.0),
+                    'units_sold' => (int) ($countBy[$id] ?? 0),
+                ];
+            }
+            usort($rows, fn(array $a, array $b) => [$b['units_sold'], $b['total_sales']] <=> [$a['units_sold'], $a['total_sales']]);
+
+            $itemRes['buckets'][$key]['all_items_seen'] = $rows;
+        }
+
+        return [
+            'item_breakdown' => $itemRes,
+            'sold_with_pizza' => $soldRes,
+            'all_items_union' => array_map('intval', $unionIds),
+        ];
+    }
+
+    /** Rows for $ids that sold at least one unit, most units first, then most sales. */
+    private function storeReportItemRows(array $ids, array $sumByItem, array $countByItem, array $nameByItem, array $unitPriceByItem): array
+    {
+        $rows = [];
+        foreach ($ids as $intId) {
+            $id = (string) $intId;
+            $units = (int) ($countByItem[$id] ?? 0);
+            if ($units === 0) {
+                continue;
+            }
+
+            $rows[] = [
+                'item_id' => (int) $intId,
+                'menu_item_name' => $nameByItem[$id] ?? '',
+                'unit_price' => (float) ($unitPriceByItem[$id] ?? 0.0),
+                'total_sales' => (float) ($sumByItem[$id] ?? 0.0),
+                'units_sold' => $units,
+            ];
+        }
+        usort($rows, fn(array $a, array $b) => [$b['units_sold'], $b['total_sales']] <=> [$a['units_sold'], $a['total_sales']]);
+
+        return $rows;
+    }
+
+    /**
+     * Sold-with-pizza units per bucket. An order counts for a bucket when it has
+     * a pizza line in that bucket; only lines with quantity > 0 are counted.
+     * Orders are grouped per bucket WITH ROLLUP: the rollup row of each order
+     * (bucket NULL) is that order across all buckets, i.e. the 'all' bucket.
+     *
+     * @param Builder[] $sources
+     * @return array<string, array<string, int>>
+     */
+    private function storeReportSoldWithUnits(array $sources, array $relevantIdStr): array
+    {
+        $bucketCase = $this->storeReportBucketCase();
+        $in = fn(array $ids) => $this->storeReportSqlIn('item_id', array_map('strval', $ids));
+
+        // Counted on top of the categories below.
+        $extra = "CASE WHEN item_id = '204100' THEN 'bev_20oz'"
+            . " WHEN item_id = '204200' THEN 'bev_2l'"
+            . " WHEN {$in(self::STORE_REPORT_ICB_IDS)} THEN 'italian_cheese_bread' END";
+        // One category per line, first match wins.
+        $category = "CASE WHEN item_id = '103001' THEN 'crazy_bread'"
+            . " WHEN {$in(self::STORE_REPORT_COOKIE_IDS)} THEN 'cookies'"
+            . " WHEN item_id = '103002' THEN 'sauce'"
+            . " WHEN is_wings = 1 THEN 'wings'"
+            . " WHEN is_beverages = 1 THEN 'beverages'"
+            . " WHEN is_crazy_puffs = 1 THEN 'crazy_puffs' END";
+
+        $unitKeys = ['crazy_bread', 'cookies', 'sauce', 'wings', 'beverages', 'crazy_puffs', 'bev_20oz', 'bev_2l', 'italian_cheese_bread'];
+        $extraKeys = ['bev_20oz', 'bev_2l', 'italian_cheese_bread'];
+
+        $orderSums = [];
+        $totalSums = [];
+        foreach ($unitKeys as $unitKey) {
+            $column = in_array($unitKey, $extraKeys, true) ? 'extra' : 'category';
+            $orderSums[] = "SUM(CASE WHEN {$column} = '{$unitKey}' THEN units ELSE 0 END) AS {$unitKey}";
+            $totalSums[] = "SUM(CASE WHEN has_pizza = 1 AND CHAR_LENGTH(oid) > 0 THEN {$unitKey} ELSE 0 END) AS {$unitKey}";
+        }
+
+        $result = array_fill_keys(array_keys(self::STORE_REPORT_BUCKETS), array_fill_keys([...$unitKeys, 'pizza_base'], 0));
+
+        foreach ($sources as $query) {
+            $lines = (clone $query)
+                ->where(fn(Builder $q) => $q->whereIn('item_id', $relevantIdStr)->orWhere('is_pizza', 1))
+                ->selectRaw("
+                    franchise_store,
+                    business_date,
+                    COALESCE(order_id, '') AS oid,
+                    {$bucketCase} AS bucket,
+                    CASE WHEN is_pizza = 1 THEN 1 ELSE 0 END AS pizza,
+                    CASE WHEN is_pizza = 1 THEN COALESCE(quantity, 0) ELSE 0 END AS pizza_units,
+                    CASE WHEN quantity > 0 THEN quantity ELSE 0 END AS units,
+                    {$extra} AS extra,
+                    {$category} AS category
+                ");
+
+            $orders = $query->newQuery()
+                ->fromSub($lines, 'l')
+                ->selectRaw('franchise_store, business_date, oid, bucket, MAX(pizza) AS has_pizza, SUM(pizza_units) AS pizza_units, ' . implode(', ', $orderSums))
+                ->groupByRaw('franchise_store, business_date, oid, bucket WITH ROLLUP');
+
+            // oid NULL = the store/date rollup rows, not needed.
+            $rows = $query->newQuery()
+                ->fromSub($orders, 'o')
+                ->whereNotNull('oid')
+                ->selectRaw('bucket, SUM(pizza_units) AS pizza_base, ' . implode(', ', $totalSums))
+                ->groupBy('bucket')
+                ->get();
+
+            foreach ($rows as $row) {
+                $key = $row->bucket ?? 'all';
+                if (!isset($result[$key])) {
+                    continue;
+                }
+                foreach ($result[$key] as $unitKey => $count) {
+                    $result[$key][$unitKey] = $count + (int) $row->{$unitKey};
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Unit price per price channel and item: net_amount / quantity of the item's
+     * first line (business_date, then id) in $store with no bundle and no
+     * modification reason.
+     *
+     * @return array<string, array<string, float>>
+     */
+    private function storeReportUnitPrices(string $store, CarbonImmutable $start, CarbonImmutable $end, array $itemIds): array
+    {
+        $channelCase = 'CASE';
+        $placedAll = [];
+        $fulfilledAll = [];
+        foreach (self::STORE_REPORT_PRICE_CHANNELS as $channel => [$placed, $fulfilled]) {
+            $channelCase .= " WHEN {$this->storeReportSqlIn('order_placed_method', $placed)}"
+                . " AND {$this->storeReportSqlIn('order_fulfilled_method', $fulfilled)} THEN '{$channel}'";
+            array_push($placedAll, ...$placed);
+            array_push($fulfilledAll, ...$fulfilled);
+        }
+        $channelCase .= ' END';
+
+        $prices = array_fill_keys(array_keys(self::STORE_REPORT_PRICE_CHANNELS), []);
+
+        foreach ($this->storeReportSources('order_line', $store, $start, $end) as $query) {
+            $rows = $this->storeReportWithoutBundle($query)
+                ->whereIn('item_id', $itemIds)
+                ->where('quantity', '>', 0)
+                ->whereIn('order_placed_method', array_values(array_unique($placedAll)))
+                ->whereIn('order_fulfilled_method', array_values(array_unique($fulfilledAll)))
+                ->selectRaw("
+                    item_id,
+                    {$channelCase} AS channel,
+                    MIN(CONCAT(DATE_FORMAT(business_date, '%Y%m%d'), LPAD(id, 20, '0'), '|', COALESCE(net_amount, 0), '|', quantity)) AS first_line
+                ")
+                ->groupBy('item_id', 'channel')
+                ->get();
+
+            // Archive comes first and holds the older dates, so a price it found stands.
+            foreach ($rows as $row) {
+                $itemIdS = (string) $row->item_id;
+                if ($row->channel === null || isset($prices[$row->channel][$itemIdS])) {
+                    continue;
+                }
+                [, $netAmount, $quantity] = explode('|', (string) $row->first_line);
+                $prices[$row->channel][$itemIdS] = (float) $netAmount / (float) $quantity;
+            }
+        }
+
+        return $prices;
+    }
+
+    /**
+     * Routed $table queries for the range (archive first), each on its own
+     * connection, filtered to $store when given.
+     *
+     * @return Builder[]
+     */
+    private function storeReportSources(string $table, ?string $store, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $queries = DatabaseRouter::routedQueries($table, $start->toMutable(), $end->toMutable());
+
+        if ($store !== null) {
+            foreach ($queries as $query) {
+                $query->where('franchise_store', $store);
+            }
+        }
+
+        return $queries;
+    }
+
+    /** Lines sold on their own: no bundle and no modification reason. */
+    private function storeReportWithoutBundle(Builder $query): Builder
+    {
+        return $query
+            ->where(fn(Builder $q) => $q->whereNull('bundle_name')->orWhere('bundle_name', ''))
+            ->where(fn(Builder $q) => $q->whereNull('modification_reason')->orWhere('modification_reason', ''));
+    }
+
+    /** SQL CASE naming the line's bucket (STORE_REPORT_BUCKETS key), 'none' when it is in no named bucket. */
+    private function storeReportBucketCase(): string
+    {
+        $sql = 'CASE';
+        foreach (self::STORE_REPORT_BUCKETS as $key => $rules) {
+            if ($rules['placed'] === null) {
+                continue;
+            }
+            $sql .= " WHEN {$this->storeReportSqlIn('order_placed_method', $rules['placed'])}"
+                . " AND {$this->storeReportSqlIn('order_fulfilled_method', $rules['fulfilled'])} THEN '{$key}'";
+        }
+
+        return $sql . " ELSE 'none' END";
+    }
+
+    /** "column IN ('a', 'b')" for the constant lists of this class. */
+    private function storeReportSqlIn(string $column, array $values): string
+    {
+        $quoted = array_map(fn($value) => "'" . str_replace("'", "''", (string) $value) . "'", $values);
+
+        return $column . ' IN (' . implode(', ', $quoted) . ')';
+    }
+
+    private function storeReportDivide(float $num, float $den): float
+    {
+        return $den != 0.0 ? $num / $den : 0.0;
     }
 
     public function portioningReport(string $store, string $date): JsonResponse

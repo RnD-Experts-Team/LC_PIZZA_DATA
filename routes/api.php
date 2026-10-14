@@ -60,6 +60,8 @@ Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'por
 Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware('auth.token.store');
 // Stores come from ?stores=a,b (or the body); none sent means every store.
 Route::get('/reports/upselling', [ReportsController::class, 'upsellingReport'])->middleware('auth.secret.key');
+// Port of LC_Pizza's /reports/store: ?from=&to=[&franchise_store=][&without_bundle=1], no store = all stores.
+Route::get('/reports/store', [ReportsController::class, 'storeReport'])->middleware('auth.secret.key');
 
 // Employee report: store-wide roster + debrief activity (counts per debrief
 // type) for the business week containing {date}, plus trailing-week trend.
