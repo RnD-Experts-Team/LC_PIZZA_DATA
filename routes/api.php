@@ -58,9 +58,9 @@ Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToRepo
 Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class, 'cleaningReviewReport'])->middleware('auth.token.store');
 Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'portioningReport'])->middleware('auth.token.store');
 Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware('auth.token.store');
-// Promo breakdown for every store over a range: ?start_date=&end_date=[&stores=a,b], none sent means every store.
+// Promo report of every store at once: ?date=[&stores=a,b], none sent means every store with sales that week.
 Route::get('/reports/promo', [ReportsController::class, 'promoReportAllStores'])->middleware('auth.secret.key');
-// Channel sales / phone and adjusted sales for every store over a range: ?start_date=&end_date=[&stores=a,b].
+// Channel sales / phone and adjusted sales reports of every store at once: ?date=[&stores=a,b].
 Route::get('/reports/channel-sales', [ReportsController::class, 'channelSalesAllStores'])->middleware('auth.secret.key');
 Route::get('/reports/phone-and-adjusted-sales', [ReportsController::class, 'phoneAndAdjustedSalesAllStores'])->middleware('auth.secret.key');
 // Stores come from ?stores=a,b (or the body); none sent means every store.
