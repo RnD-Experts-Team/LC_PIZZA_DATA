@@ -1821,6 +1821,94 @@ class ReportsController extends Controller
         return response()->json($this->buildChannelSales($store, $date));
     }
 
+    /**
+     * GET /api/reports/channel-sales?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     *
+     * Channel sales of every store over the range in one call; per store the same
+     * figures as a week of /reports/channel-sales/{store}/{date}, computed over the
+     * range. No stores means every store with sales in the range.
+     */
+    public function channelSalesAllStores(Request $request): JsonResponse
+    {
+        [$start, $end, $stores] = $this->rangeAndStoresFromRequest($request);
+
+        $byStore = [];
+        foreach ($stores as $store) {
+            $byStore[$store] = $this->channelSalesForRange($store, $start, $end);
+        }
+
+        return response()->json([
+            'filtering' => [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+                'stores' => $stores,
+                'store_count' => count($stores),
+            ],
+            'by_store' => $byStore,
+        ]);
+    }
+
+    /**
+     * GET /api/reports/phone-and-adjusted-sales?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     *
+     * Phone sales and adjusted royalty obligation of every store over the range,
+     * computed like the week/period/quarter/year figures of
+     * /reports/phone-and-adjusted-sales/{store}/{date}.
+     */
+    public function phoneAndAdjustedSalesAllStores(Request $request): JsonResponse
+    {
+        [$start, $end, $stores] = $this->rangeAndStoresFromRequest($request);
+
+        $byStore = [];
+        foreach ($stores as $store) {
+            $byStore[$store] = $this->phoneSalesAndAdjustedRoyaltyForRange($store, $start, $end);
+        }
+
+        return response()->json([
+            'filtering' => [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+                'stores' => $stores,
+                'store_count' => count($stores),
+            ],
+            'by_store' => $byStore,
+        ]);
+    }
+
+    /**
+     * Validated ?start_date=&end_date=[&stores=a,b] (max 366 days, 100 stores);
+     * no stores means every store with sales in the range.
+     *
+     * @return array{0: CarbonImmutable, 1: CarbonImmutable, 2: string[]}
+     */
+    private function rangeAndStoresFromRequest(Request $request): array
+    {
+        $input = $request->validate([
+            'start_date' => ['required', 'date_format:Y-m-d'],
+            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'stores' => ['nullable'],
+            'stores.*' => ['string'],
+        ]);
+
+        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
+        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
+
+        if ($start->diffInDays($end) + 1 > 366) {
+            throw ValidationException::withMessages(['end_date' => 'Date range must not exceed 366 days']);
+        }
+
+        $stores = $this->parseStoreList($input['stores'] ?? null);
+        if (count($stores) > 100) {
+            throw ValidationException::withMessages(['stores' => 'Cannot request more than 100 stores']);
+        }
+        if (empty($stores)) {
+            $stores = $this->resolveStores('all', $start, $end);
+            sort($stores);
+        }
+
+        return [$start, $end, $stores];
+    }
+
     private function buildChannelSales(string $store, string $date): array
     {
         $day = CarbonImmutable::parse($date)->startOfDay();
@@ -1856,6 +1944,62 @@ class ReportsController extends Controller
     {
         $this->validateInputs($store, $date);
         return response()->json($this->buildPromoReport($store, $date));
+    }
+
+    /**
+     * GET /api/reports/promo?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     *
+     * The promo breakdown of every store over the date range in one call: per
+     * store the same promo_breakdown / promo_totals as /reports/promo/{store}/{date}
+     * gives for a week, computed over the range. No stores means every store
+     * with sales in the range.
+     */
+    public function promoReportAllStores(Request $request): JsonResponse
+    {
+        $input = $request->validate([
+            'start_date' => ['required', 'date_format:Y-m-d'],
+            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'stores' => ['nullable'],
+            'stores.*' => ['string'],
+        ]);
+
+        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
+        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
+
+        if ($start->diffInDays($end) + 1 > 366) {
+            throw ValidationException::withMessages(['end_date' => 'Date range must not exceed 366 days']);
+        }
+
+        $stores = $this->parseStoreList($input['stores'] ?? null);
+        if (count($stores) > 100) {
+            throw ValidationException::withMessages(['stores' => 'Cannot request more than 100 stores']);
+        }
+        if (empty($stores)) {
+            $stores = $this->resolveStores('all', $start, $end);
+            sort($stores);
+        }
+
+        $byStore = [];
+        foreach ($stores as $store) {
+            $totalSales = round($this->salesTotal($store, $start, $end), 2);
+            $breakdown = $this->promoBreakdownForRange($store, $start, $end, $totalSales);
+
+            $byStore[$store] = [
+                'total_store_sales' => $totalSales,
+                'promo_breakdown' => $breakdown,
+                'promo_totals' => $this->sumPromoBreakdown($breakdown, $totalSales),
+            ];
+        }
+
+        return response()->json([
+            'filtering' => [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+                'stores' => $stores,
+                'store_count' => count($stores),
+            ],
+            'by_store' => $byStore,
+        ]);
     }
 
     /**
