@@ -1822,91 +1822,67 @@ class ReportsController extends Controller
     }
 
     /**
-     * GET /api/reports/channel-sales?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     * GET /api/reports/channel-sales?date=YYYY-MM-DD[&stores=a,b]
      *
-     * Channel sales of every store over the range in one call; per store the same
-     * figures as a week of /reports/channel-sales/{store}/{date}, computed over the
-     * range. No stores means every store with sales in the range.
+     * Every store's /reports/channel-sales/{store}/{date} report in one call.
      */
     public function channelSalesAllStores(Request $request): JsonResponse
     {
-        [$start, $end, $stores] = $this->rangeAndStoresFromRequest($request);
-
-        $byStore = [];
-        foreach ($stores as $store) {
-            $byStore[$store] = $this->channelSalesForRange($store, $start, $end);
-        }
-
-        return response()->json([
-            'filtering' => [
-                'start_date' => $start->toDateString(),
-                'end_date' => $end->toDateString(),
-                'stores' => $stores,
-                'store_count' => count($stores),
-            ],
-            'by_store' => $byStore,
-        ]);
+        return $this->allStoresReport($request, fn(string $store, string $date): array => $this->buildChannelSales($store, $date));
     }
 
     /**
-     * GET /api/reports/phone-and-adjusted-sales?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     * GET /api/reports/phone-and-adjusted-sales?date=YYYY-MM-DD[&stores=a,b]
      *
-     * Phone sales and adjusted royalty obligation of every store over the range,
-     * computed like the week/period/quarter/year figures of
-     * /reports/phone-and-adjusted-sales/{store}/{date}.
+     * Every store's /reports/phone-and-adjusted-sales/{store}/{date} report in one call.
      */
     public function phoneAndAdjustedSalesAllStores(Request $request): JsonResponse
     {
-        [$start, $end, $stores] = $this->rangeAndStoresFromRequest($request);
-
-        $byStore = [];
-        foreach ($stores as $store) {
-            $byStore[$store] = $this->phoneSalesAndAdjustedRoyaltyForRange($store, $start, $end);
-        }
-
-        return response()->json([
-            'filtering' => [
-                'start_date' => $start->toDateString(),
-                'end_date' => $end->toDateString(),
-                'stores' => $stores,
-                'store_count' => count($stores),
-            ],
-            'by_store' => $byStore,
-        ]);
+        return $this->allStoresReport($request, fn(string $store, string $date): array => $this->buildPhoneAndAdjustedSalesReport($store, $date));
     }
 
     /**
-     * Validated ?start_date=&end_date=[&stores=a,b] (max 366 days, 100 stores);
-     * no stores means every store with sales in the range.
+     * Runs a per-store report builder for every store, or for ?stores=a,b (max 100).
+     * No stores means every store with sales in the date's business week. Errors
+     * are always answered as JSON, never as a redirect.
      *
-     * @return array{0: CarbonImmutable, 1: CarbonImmutable, 2: string[]}
+     * @param callable(string, string): array $build
      */
-    private function rangeAndStoresFromRequest(Request $request): array
+    private function allStoresReport(Request $request, callable $build): JsonResponse
     {
+        $request->headers->set('Accept', 'application/json');
+
         $input = $request->validate([
-            'start_date' => ['required', 'date_format:Y-m-d'],
-            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'date' => ['required', 'date_format:Y-m-d'],
             'stores' => ['nullable'],
             'stores.*' => ['string'],
         ]);
 
-        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
-        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
-
-        if ($start->diffInDays($end) + 1 > 366) {
-            throw ValidationException::withMessages(['end_date' => 'Date range must not exceed 366 days']);
-        }
+        $day = CarbonImmutable::parse($input['date'])->startOfDay();
 
         $stores = $this->parseStoreList($input['stores'] ?? null);
         if (count($stores) > 100) {
             throw ValidationException::withMessages(['stores' => 'Cannot request more than 100 stores']);
         }
         if (empty($stores)) {
-            $stores = $this->resolveStores('all', $start, $end);
+            [$weekStart] = $this->isoBusinessWeek($day);
+            $stores = $this->resolveStores('all', $weekStart, $day);
             sort($stores);
         }
 
-        return [$start, $end, $stores];
+        $byStore = [];
+        foreach ($stores as $store) {
+            $byStore[$store] = $build($store, $day->toDateString());
+        }
+
+        return response()->json([
+            'filtering' => [
+                'date' => $day->toDateString(),
+                'stores' => $stores,
+                'store_count' => count($stores),
+            ],
+            'by_store' => $byStore,
+        ]);
     }
 
     private function buildChannelSales(string $store, string $date): array
@@ -1947,59 +1923,13 @@ class ReportsController extends Controller
     }
 
     /**
-     * GET /api/reports/promo?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=a,b]
+     * GET /api/reports/promo?date=YYYY-MM-DD[&stores=a,b]
      *
-     * The promo breakdown of every store over the date range in one call: per
-     * store the same promo_breakdown / promo_totals as /reports/promo/{store}/{date}
-     * gives for a week, computed over the range. No stores means every store
-     * with sales in the range.
+     * Every store's /reports/promo/{store}/{date} report in one call.
      */
     public function promoReportAllStores(Request $request): JsonResponse
     {
-        $input = $request->validate([
-            'start_date' => ['required', 'date_format:Y-m-d'],
-            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
-            'stores' => ['nullable'],
-            'stores.*' => ['string'],
-        ]);
-
-        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
-        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
-
-        if ($start->diffInDays($end) + 1 > 366) {
-            throw ValidationException::withMessages(['end_date' => 'Date range must not exceed 366 days']);
-        }
-
-        $stores = $this->parseStoreList($input['stores'] ?? null);
-        if (count($stores) > 100) {
-            throw ValidationException::withMessages(['stores' => 'Cannot request more than 100 stores']);
-        }
-        if (empty($stores)) {
-            $stores = $this->resolveStores('all', $start, $end);
-            sort($stores);
-        }
-
-        $byStore = [];
-        foreach ($stores as $store) {
-            $totalSales = round($this->salesTotal($store, $start, $end), 2);
-            $breakdown = $this->promoBreakdownForRange($store, $start, $end, $totalSales);
-
-            $byStore[$store] = [
-                'total_store_sales' => $totalSales,
-                'promo_breakdown' => $breakdown,
-                'promo_totals' => $this->sumPromoBreakdown($breakdown, $totalSales),
-            ];
-        }
-
-        return response()->json([
-            'filtering' => [
-                'start_date' => $start->toDateString(),
-                'end_date' => $end->toDateString(),
-                'stores' => $stores,
-                'store_count' => count($stores),
-            ],
-            'by_store' => $byStore,
-        ]);
+        return $this->allStoresReport($request, fn(string $store, string $date): array => $this->buildPromoReport($store, $date));
     }
 
     /**
