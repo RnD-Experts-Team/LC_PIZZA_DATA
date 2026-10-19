@@ -30,6 +30,13 @@ use App\Http\Controllers\API\{
  * 
  * All routes return JSON
  * Authenticated via API middleware
+ *
+ * Rate limits (AppServiceProvider): `throttle:api` sits next to every
+ * auth.token.store and runs ahead of the pizzasys call. Reports, exports and
+ * uploads add their own tier on top. The progress polls REPLACE it with
+ * `api-poll`, whose per-token limit is above the general read limit and
+ * would otherwise never be reached. auth.secret.key routes are counted per
+ * secret + IP, as exports.
  */
 
 
@@ -38,48 +45,48 @@ use App\Http\Controllers\API\{
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 Route::prefix('export')->group(function () {
-    Route::get('csv', [ExportingController::class, 'exportCSV'])->name('export.csv')->middleware('auth.token.store');
-    Route::get('json', [ExportingController::class, 'exportJson'])->name('export.json')->middleware('auth.token.store');
-    Route::get('csv/excel-reports', [ExportingController::class, 'exportCSV'])->name('export.csv.excel-reports')->middleware('auth.secret.key');
+    Route::get('csv', [ExportingController::class, 'exportCSV'])->name('export.csv')->middleware(['throttle:api', 'throttle:api-export', 'auth.token.store']);
+    Route::get('json', [ExportingController::class, 'exportJson'])->name('export.json')->middleware(['throttle:api', 'throttle:api-export', 'auth.token.store']);
+    Route::get('csv/excel-reports', [ExportingController::class, 'exportCSV'])->name('export.csv.excel-reports')->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 });
 
-Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware('auth.token.store');
-Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware('auth.token.store');
-Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware('auth.token.store');
-Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware('auth.token.store');
-Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware('auth.token.store');
-Route::get('/reports/channel-sales/{store}/{date}', [ReportsController::class, 'channelSales'])->middleware('auth.token.store');
-Route::get('/reports/phone-and-adjusted-sales/{store}/{date}', [ReportsController::class, 'phoneAndAdjustedSales'])->middleware('auth.token.store');
-Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'cashControl'])->middleware('auth.token.store');
-Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware('auth.token.store');
-Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware('auth.token.store');
-Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware('auth.token.store');
-Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToReport'])->middleware('auth.token.store');
-Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class, 'cleaningReviewReport'])->middleware('auth.token.store');
-Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'portioningReport'])->middleware('auth.token.store');
-Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware('auth.token.store');
+Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware(['throttle:api', 'throttle:api-heavy-multi', 'auth.token.store']);
+Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/channel-sales/{store}/{date}', [ReportsController::class, 'channelSales'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/phone-and-adjusted-sales/{store}/{date}', [ReportsController::class, 'phoneAndAdjustedSales'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/cash-control/{store}/{date}', [ReportsController::class, 'cashControl'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/lto/{store}/{date}', [ReportsController::class, 'ltoReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/promo/{store}/{date}', [ReportsController::class, 'promoReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/non-negotiable-reports/{store}/{date}', [ReportsController::class, 'nonNegotiableReports'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/go-to/{store}/{date}', [ReportsController::class, 'goToReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/cleaning-review/{store}/{date}', [ReportsController::class, 'cleaningReviewReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/portioning/{store}/{date}', [ReportsController::class, 'portioningReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/customer-service/{store}/{date}', [ReportsController::class, 'customerServiceReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 // Promo report of every store at once: ?date=[&stores=a,b], none sent means every store with sales that week.
-Route::get('/reports/promo', [ReportsController::class, 'promoReportAllStores'])->middleware('auth.secret.key');
+Route::get('/reports/promo', [ReportsController::class, 'promoReportAllStores'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Channel sales / phone and adjusted sales reports of every store at once: ?date=[&stores=a,b].
-Route::get('/reports/channel-sales', [ReportsController::class, 'channelSalesAllStores'])->middleware('auth.secret.key');
-Route::get('/reports/phone-and-adjusted-sales', [ReportsController::class, 'phoneAndAdjustedSalesAllStores'])->middleware('auth.secret.key');
+Route::get('/reports/channel-sales', [ReportsController::class, 'channelSalesAllStores'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
+Route::get('/reports/phone-and-adjusted-sales', [ReportsController::class, 'phoneAndAdjustedSalesAllStores'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Stores come from ?stores=a,b (or the body); none sent means every store.
-Route::get('/reports/upselling', [ReportsController::class, 'upsellingReport'])->middleware('auth.secret.key');
+Route::get('/reports/upselling', [ReportsController::class, 'upsellingReport'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Port of LC_Pizza's /reports/store: ?from=&to=[&franchise_store=][&without_bundle=1], no store = all stores.
-Route::get('/reports/store', [ReportsController::class, 'storeReport'])->middleware('auth.secret.key');
+Route::get('/reports/store', [ReportsController::class, 'storeReport'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Port of LC_Pizza's /reports/sold-with-weekly-by-store: ?from=[&to=][&bucket=][&without_bundle=1], all stores, Tuesday weeks.
-Route::get('/reports/sold-with-weekly-by-store', [ReportsController::class, 'soldWithWeeklyByStore'])->middleware('auth.secret.key');
+Route::get('/reports/sold-with-weekly-by-store', [ReportsController::class, 'soldWithWeeklyByStore'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 
 // Employee report: store-wide roster + debrief activity (counts per debrief
 // type) for the business week containing {date}, plus trailing-week trend.
 // Override the trend window with ?trend_weeks= (default 6, max 12).
-Route::get('/reports/employees/{store}/{date}', [EmployeeReportController::class, 'show'])->middleware('auth.token.store');
-Route::get('/reports/scheduling-insights/{store}', [ReportsController::class, 'schedulingInsights'])->middleware('auth.token.store');
+Route::get('/reports/employees/{store}/{date}', [EmployeeReportController::class, 'show'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/scheduling-insights/{store}', [ReportsController::class, 'schedulingInsights'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 
-Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware('auth.secret.key');
-Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware('auth.token.store');
+Route::get('/reports/pricing-kpi', [PricingKpiController::class, 'export'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
+Route::get('/reports/lc-archive-zip/{date}', [LcArchiveExportController::class, 'download'])->middleware(['throttle:api', 'throttle:api-export', 'auth.token.store']);
 
-Route::prefix('engine')->middleware('auth.token.store')->group(function () {
+Route::prefix('engine')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
 
     // Keys CRUD
     Route::apiResource('keys', KeyController::class);
@@ -106,24 +113,24 @@ Route::prefix('engine')->middleware('auth.token.store')->group(function () {
 
 
 Route::prefix('manual-import')
-    ->middleware('auth.token.store')
+    ->middleware(['throttle:api', 'auth.token.store'])
     ->group(function () {
 
         // UI page (NO secret key middleware, accessible for API requests)
         Route::get('/', [ManualCsvImportController::class, 'index']);
-        Route::post('/inspect-zip', [ManualCsvImportController::class, 'inspectZip']);
+        Route::post('/inspect-zip', [ManualCsvImportController::class, 'inspectZip'])->middleware('throttle:api-upload');
 
-        Route::post('/upload', [ManualCsvImportController::class, 'upload']);
+        Route::post('/upload', [ManualCsvImportController::class, 'upload'])->middleware('throttle:api-upload');
 
-        Route::get('/progress/{uploadId}', [ManualCsvImportController::class, 'progress']);
+        Route::get('/progress/{uploadId}', [ManualCsvImportController::class, 'progress'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll');
 
         Route::post('/reaggregate', [ManualCsvImportController::class, 'reaggregate']);
 
-        Route::get('/aggregation-progress/{aggregationId}', [ManualCsvImportController::class, 'aggregationProgress']);
+        Route::get('/aggregation-progress/{aggregationId}', [ManualCsvImportController::class, 'aggregationProgress'])->withoutMiddleware('throttle:api')->middleware('throttle:api-poll');
     });
 
 
-Route::prefix('stores/{store_id}/employee-debriefs')->middleware('auth.token.store')->group(function () {
+Route::prefix('stores/{store_id}/employee-debriefs')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
 
     Route::get('/', [EmployeeDebriefController::class, 'index']);
 
@@ -143,7 +150,7 @@ Route::prefix('stores/{store_id}/employee-debriefs')->middleware('auth.token.sto
 
 });
 
-Route::prefix('tags')->middleware('auth.token.store')->group(function () {
+Route::prefix('tags')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
     Route::get('/', [TagController::class, 'index']);
     Route::post('/', [TagController::class, 'store']);
     Route::delete('/bulk', [TagController::class, 'bulkDelete']);
@@ -155,13 +162,13 @@ Route::prefix('tags')->middleware('auth.token.store')->group(function () {
 // GOALS ROUTES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-Route::prefix('goal-metrics')->middleware('auth.token.store')->group(function () {
+Route::prefix('goal-metrics')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
     Route::get('/', [GoalMetricController::class, 'index']);
     Route::post('/', [GoalMetricController::class, 'store']);
     Route::delete('/{goalMetric}', [GoalMetricController::class, 'destroy']);
 });
 
-Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(function () {
+Route::prefix('stores/{store_id}/goals')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
     Route::get('/', [GoalController::class, 'index']);
     Route::post('/', [GoalController::class, 'store']);
     Route::put('/{goal}', [GoalController::class, 'update']);
@@ -173,33 +180,33 @@ Route::prefix('stores/{store_id}/goals')->middleware('auth.token.store')->group(
 // GO TO CALL ROUTES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware('auth.token.store');
-Route::get('/reports/transfer-in-out/{store}/{date}', [ReportsController::class, 'transferInOutReport'])->middleware('auth.token.store');
-Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class, 'ordersVsSalesReport'])->middleware('auth.token.store');
-Route::get('/reports/hnr-plus/{store}/{date}', [ReportsController::class, 'hnrPlusReport'])->middleware('auth.token.store');
+Route::post('/go-to-calls/upload-csv', [GoToCallController::class, 'uploadCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
+Route::get('/reports/transfer-in-out/{store}/{date}', [ReportsController::class, 'transferInOutReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/orders-vs-sales/{store}/{date}', [ReportsController::class, 'ordersVsSalesReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+Route::get('/reports/hnr-plus/{store}/{date}', [ReportsController::class, 'hnrPlusReport'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // INVENTORY ROUTES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware('auth.token.store');
-Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware('auth.token.store');
+Route::post('/transfer-in-out/upload-csv', [InventoryController::class, 'uploadTransferInOutCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
+Route::post('/inventory-orders/upload-csv', [InventoryController::class, 'uploadInventoryOrderCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // HNR+ ROUTES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-Route::post('/hnr-plus/upload-csv', [HnrPlusController::class, 'uploadCsv'])->middleware('auth.token.store');
+Route::post('/hnr-plus/upload-csv', [HnrPlusController::class, 'uploadCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // CLEANING REVIEW ROUTES
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware('auth.token.store');
-Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'uploadCustomerServiceCsv'])->middleware('auth.token.store');
+Route::post('/cleaning-review/upload-csv', [CleaningReviewController::class, 'uploadCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
+Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'uploadCustomerServiceCsv'])->middleware(['throttle:api', 'throttle:api-upload', 'auth.token.store']);
 
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -218,7 +225,7 @@ Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'u
 // after it — never in front. That is the shape pizzasys' auth_rules are written
 // against (store_id_sources.path): the store is always in the same place, so the
 // rule for this route is the ordinary one rather than a special case.
-Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->group(function () {
+Route::prefix('stores/{store_id}/dough-sauce')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
 
     Route::get('daily-plan', [DoughSauceController::class, 'dailyPlan'])->name('dough-sauce.store.daily-plan');
 
@@ -232,7 +239,7 @@ Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->
 // item with no recipe there, these are what the fix button calls. No store_id:
 // a recipe is the same for all 44 stores, so there is no store segment to lead
 // with and the module name starts the path.
-Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () {
+Route::prefix('dough-sauce')->middleware(['throttle:api', 'auth.token.store'])->group(function () {
 
     Route::get('ingredients', [DoughSauceController::class, 'ingredients'])->name('dough-sauce.ingredients');
     Route::get('recipes', [DoughSauceController::class, 'recipes'])->name('dough-sauce.recipes.index');

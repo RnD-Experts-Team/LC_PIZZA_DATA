@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Models\Employee;
 use App\Models\User;
 use Closure;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -72,6 +73,12 @@ class AuthTokenStoreScopeMiddleware
                 $storeContext
             );
         // });
+
+        // pizzasys could not judge the token (busy, down, rate-limiting us).
+        // That is not the caller's fault: a 401 would log them out.
+        if ($verify['unavailable'] ?? false) {
+            abort(503, 'Auth server unavailable', ['Retry-After' => '5']);
+        }
 
         // 5) Enforce BOTH token validity + authorization decision
         $active = (bool) ($verify['active'] ?? false);
@@ -253,6 +260,12 @@ class AuthTokenStoreScopeMiddleware
      * Calls Auth Server TokenVerifyController endpoint.
      * - Authorization header MUST be the SERVICE call token
      * - user token is sent in JSON body as "token"
+     *
+     * pizzasys answers 200 for every token it could judge, valid or not.
+     * Anything else - a 429, a 5xx, a timeout - means it could not judge, and
+     * comes back as ['active' => false, 'unavailable' => true], which handle()
+     * turns into a 503 rather than a 401, so a busy auth server does not log
+     * people out.
      */
     private function verifyWithAuthServer(
         string $baseUrl,
@@ -277,25 +290,33 @@ class AuthTokenStoreScopeMiddleware
             'store_context' => $storeContext,
         ];
 
+        $unavailable = ['active' => false, 'unavailable' => true];
+
         try {
             $http = Http::timeout($timeout)
                 ->acceptJson()
                 ->withToken($callToken);
 
             if ($retries > 0) {
-                $http = $http->retry($retries, $retryMs);
+                // Never retry a 429: pizzasys is asking us to back off.
+                $http = $http->retry(
+                    $retries,
+                    $retryMs,
+                    fn ($e) => ! ($e instanceof RequestException && $e->response->status() === 429),
+                    throw: false,
+                );
             }
 
             $resp = $http->post($endpoint, $payload);
 
             if (!$resp->ok()) {
-                return ['active' => false];
+                return $unavailable;
             }
 
             $data = $resp->json();
-            return is_array($data) ? $data : ['active' => false];
+            return is_array($data) ? $data : $unavailable;
         } catch (\Throwable $e) {
-            return ['active' => false];
+            return $unavailable;
         }
     }
 }
