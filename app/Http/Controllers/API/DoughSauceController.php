@@ -62,21 +62,21 @@ class DoughSauceController extends Controller
     }
 
     /**
-     * dailyPlan() for many dates of one store, in one call.
+     * dailyPlan() for many stores x many dates, in one call.
      *
-     * The weekly report checks every unplanned day against its base; one request
-     * per store per day was ~1,300 calls. Still store-scoped, so pizzasys
-     * authorizes it with the ordinary path rule.
+     * The weekly report checks every unplanned day of every store against its
+     * base; one request per store per day was ~1,300 calls. The stores travel in
+     * `store_ids`, which pizzasys reads and authorizes one by one — a single
+     * store the caller may not see makes the whole request a 403.
      */
-    public function dailyPlans(DailyPlansRequest $request, string $store_id): JsonResponse
+    public function dailyPlans(DailyPlansRequest $request): JsonResponse
     {
         return response()->json([
-            'store'            => $store_id,
             'lookback'         => $request->lookback(),
             'include_refunded' => $request->includeRefunded(),
-            // Keyed by date; each value is exactly what /daily-plan returns.
-            'plans'            => $this->batchPlans->dailyPlans(
-                store:           $store_id,
+            // store -> date -> exactly what /daily-plan returns for that pair.
+            'stores'           => $this->batchPlans->dailyPlans(
+                stores:          $request->stores(),
                 targetDates:     $request->dates(),
                 lookback:        $request->lookback(),
                 includeRefunded: $request->includeRefunded(),
