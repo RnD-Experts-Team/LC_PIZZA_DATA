@@ -123,4 +123,17 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Throttle enforcement
+    |--------------------------------------------------------------------------
+    |
+    | Off: rate limits are counted and logged (throttle.breach) but nothing is
+    | refused. On: a request past a limit gets a 429. The kill switch for the
+    | whole service; the limits themselves live in AppServiceProvider.
+    |
+    */
+
+    'throttle_enforce' => (bool) env('THROTTLE_ENFORCE', false),
+
 ];

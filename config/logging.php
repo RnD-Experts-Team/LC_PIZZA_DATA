@@ -65,6 +65,15 @@ return [
             'replace_placeholders' => true,
         ],
 
+        // Rate limiting (ObservableThrottleRequests): throttle.usage,
+        // throttle.breach and throttle.store_unavailable, kept out of
+        // laravel.log so they can be read on their own.
+        'throttle' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/throttle.log'),
+            'level' => 'debug',
+        ],
+
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
