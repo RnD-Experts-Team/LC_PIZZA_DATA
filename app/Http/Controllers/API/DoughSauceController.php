@@ -4,11 +4,13 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\DoughSauce\DailyPlanRequest;
+use App\Http\Requests\DoughSauce\DailyPlansRequest;
 use App\Http\Requests\DoughSauce\StoreRecipeRequest;
 use App\Http\Requests\DoughSauce\UpdateRecipeRequest;
 use App\Models\Dough_SauceIngredient;
 use App\Models\Dough_SauceMenuItem;
 use App\Models\Dough_SauceRecipe;
+use App\Services\DoughSauce\DoughSauceBatchPlanService;
 use App\Services\DoughSauce\DoughSaucePlanService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -31,7 +33,8 @@ use Illuminate\Support\Facades\DB;
 class DoughSauceController extends Controller
 {
     public function __construct(
-        private readonly DoughSaucePlanService $plans
+        private readonly DoughSaucePlanService $plans,
+        private readonly DoughSauceBatchPlanService $batchPlans,
     ) {
     }
 
@@ -56,6 +59,29 @@ class DoughSauceController extends Controller
             lookback:        $request->lookback(),
             includeRefunded: $request->includeRefunded(),
         ));
+    }
+
+    /**
+     * dailyPlan() for many dates of one store, in one call.
+     *
+     * The weekly report checks every unplanned day against its base; one request
+     * per store per day was ~1,300 calls. Still store-scoped, so pizzasys
+     * authorizes it with the ordinary path rule.
+     */
+    public function dailyPlans(DailyPlansRequest $request, string $store_id): JsonResponse
+    {
+        return response()->json([
+            'store'            => $store_id,
+            'lookback'         => $request->lookback(),
+            'include_refunded' => $request->includeRefunded(),
+            // Keyed by date; each value is exactly what /daily-plan returns.
+            'plans'            => $this->batchPlans->dailyPlans(
+                store:           $store_id,
+                targetDates:     $request->dates(),
+                lookback:        $request->lookback(),
+                includeRefunded: $request->includeRefunded(),
+            ),
+        ]);
     }
 
     // ── The recipes ──────────────────────────────────────────────────────────
