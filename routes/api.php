@@ -221,6 +221,11 @@ Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'u
 Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->group(function () {
 
     Route::get('daily-plan', [DoughSauceController::class, 'dailyPlan'])->name('dough-sauce.store.daily-plan');
+
+    // The same figures for many dates in one call (?dates=2026-10-13,2026-10-14).
+    // The weekly report's unplanned-day check uses this: one request per store
+    // instead of one per store per day.
+    Route::get('daily-plans', [DoughSauceController::class, 'dailyPlans'])->name('dough-sauce.store.daily-plans');
 });
 
 // Recipe maintenance. The screen is in AuditApp — when the specialist sees an
