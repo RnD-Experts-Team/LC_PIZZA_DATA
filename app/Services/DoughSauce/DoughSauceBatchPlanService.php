@@ -8,29 +8,33 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * DoughSaucePlanService::dailyPlan() for many dates of one store, in three reads.
+ * DoughSaucePlanService::dailyPlan() for many stores x many dates, in one call.
  *
  * WHY IT EXISTS
  * -------------
- * The weekly report checks every unplanned day against its base. Done one date
- * per request that was ~1,300 browser calls, each paying its own HTTP round trip
- * and its own token check against pizzasys — ~250 ms apiece, almost none of it
- * spent on the actual query.
+ * The weekly report checks every unplanned day of every store against its base.
+ * Done one date per request that was ~1,300 browser calls, each paying its own
+ * HTTP round trip and its own token check against pizzasys — ~250 ms apiece,
+ * almost none of it spent on the actual query.
  *
  * WHAT IT READS
  * -------------
  * Every target date needs its own four source dates (-7, -14, -21, -28). Those
  * overlap heavily across a week, so the union is read once:
  *
- *   1. daily_item_summary  — one grouped read for every source date
- *   2. recipes             — one read spanning min..max of those dates
- *   3. ingredients         — once
+ *   recipes      — once for every store, spanning min..max of the source dates
+ *   ingredients  — once for every store
+ *   sales        — one grouped read PER STORE
  *
- * Then each target date is assembled from the shared rows with exactly the
- * arithmetic of dailyPlan(). The per-date object is the same shape the single
- * endpoint returns, so a client can swap one call for the other without
- * changing how it reads the answer. tests/Feature/API/DoughSauceDailyPlansTest
- * holds the two to that.
+ * Why sales per store and not one read for all of them: 44 stores x ~49 source
+ * days x ~150 items is ~300k rows, which as PHP arrays is hundreds of MB. One
+ * store at a time keeps memory to one store's rows, and the read is on the
+ * (franchise_store, business_date) index either way. The caller still makes
+ * one request.
+ *
+ * Then each target date is assembled with exactly the arithmetic of
+ * dailyPlan(). The per-date object is the same shape the single endpoint
+ * returns, so a client reads the answer the same way.
  */
 class DoughSauceBatchPlanService
 {
@@ -42,11 +46,12 @@ class DoughSauceBatchPlanService
     }
 
     /**
+     * @param  array<int, string>  $stores       franchise_store codes
      * @param  array<int, string>  $targetDates  Y-m-d
-     * @return array<string, array<string, mixed>>  keyed by target date
+     * @return array<string, array<string, array<string, mixed>>>  store -> date -> plan
      */
     public function dailyPlans(
-        string $store,
+        array $stores,
         array $targetDates,
         int $lookback = 4,
         bool $includeRefunded = false,
@@ -60,19 +65,23 @@ class DoughSauceBatchPlanService
         $allSources = array_values(array_unique(array_merge(...array_values($sourcesByTarget))));
         sort($allSources);
 
-        $salesByDate = $this->salesByDate($store, $allSources, $includeRefunded);
+        // Shared by every store: a recipe is the same in all 44.
         $recipes     = $this->recipeMap($allSources);
         $ingredients = $this->ingredients();
 
         $out = [];
 
-        foreach ($sourcesByTarget as $target => $dates) {
-            $sales = [];
-            foreach ($dates as $d) {
-                array_push($sales, ...($salesByDate[$d] ?? []));
-            }
+        foreach ($stores as $store) {
+            $salesByDate = $this->salesByDate($store, $allSources, $includeRefunded);
 
-            $out[$target] = $this->assemble($store, Carbon::parse($target), $dates, $sales, $recipes, $ingredients, $lookback, $includeRefunded);
+            foreach ($sourcesByTarget as $target => $dates) {
+                $sales = [];
+                foreach ($dates as $d) {
+                    array_push($sales, ...($salesByDate[$d] ?? []));
+                }
+
+                $out[$store][$target] = $this->assemble($store, Carbon::parse($target), $dates, $sales, $recipes, $ingredients, $lookback, $includeRefunded);
+            }
         }
 
         return $out;

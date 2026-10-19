@@ -209,11 +209,6 @@ Route::post('/customer-service/upload-csv', [CleaningReviewController::class, 'u
 Route::prefix('stores/{store_id}/dough-sauce')->middleware('auth.token.store')->group(function () {
 
     Route::get('daily-plan', [DoughSauceController::class, 'dailyPlan'])->name('dough-sauce.store.daily-plan');
-
-    // The same figures for many dates in one call (?dates=2026-10-13,2026-10-14).
-    // The weekly report's unplanned-day check uses this: one request per store
-    // instead of one per store per day.
-    Route::get('daily-plans', [DoughSauceController::class, 'dailyPlans'])->name('dough-sauce.store.daily-plans');
 });
 
 // Recipe maintenance. The screen is in AuditApp — when the specialist sees an
@@ -229,4 +224,11 @@ Route::prefix('dough-sauce')->middleware('auth.token.store')->group(function () 
     // it was planned.
     Route::put('recipes/{recipe}', [DoughSauceController::class, 'updateRecipe'])->name('dough-sauce.recipes.update');
     Route::delete('recipes/{recipe}', [DoughSauceController::class, 'destroyRecipe'])->name('dough-sauce.recipes.destroy');
+
+    // daily-plan for many stores x many dates in one call:
+    //   ?store_ids=03795-00044,03795-00042&dates=2026-10-13,2026-10-14
+    // The weekly report's unplanned-day check uses this — one request instead of
+    // one per store per day. Not under stores/{store_id} because it spans many;
+    // pizzasys authorizes each store in `store_ids` (scoped, policy all).
+    Route::get('daily-plans', [DoughSauceController::class, 'dailyPlans'])->name('dough-sauce.daily-plans');
 });
