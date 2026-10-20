@@ -45,7 +45,7 @@ return [
 
     'auth_server' => [
         'base_url'    => env('AUTH_SERVER_BASE_URL', 'http://auth-service.local'),
-        'verify_path' => env('AUTH_SERVER_VERIFY_PATH', '/api/v1/auth/token/verify'),
+        'verify_path' => env('AUTH_SERVER_VERIFY_PATH', '/api/v1/auth/token-verify'),
         'service_name' => env('AUTH_SERVER_SERVICE_NAME', 'my-service'),
         'call_token'  => env('AUTH_SERVER_CALL_TOKEN', ''),
 
