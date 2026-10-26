@@ -1345,9 +1345,10 @@ class ReportsController extends Controller
     {
         $request->headers->set('Accept', 'application/json');
 
+        // `date`, not `date_format:Y-m-d`: Excel and hand-typed URLs send 2026-8-6.
         $input = $request->validate([
-            'start_date' => ['required', 'date_format:Y-m-d'],
-            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'start_date' => ['required', 'date'],
+            'end_date' => ['required', 'date', 'after_or_equal:start_date'],
             'stores' => ['nullable'],
             'stores.*' => ['string'],
         ]);
