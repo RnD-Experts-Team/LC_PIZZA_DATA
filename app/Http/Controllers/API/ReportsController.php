@@ -1329,6 +1329,103 @@ class ReportsController extends Controller
     }
 
     /**
+     * GET /api/reports/third-party-marketplace?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&stores=03795,03796]
+     *
+     * Same rows as LC_Pizza's third_party_marketplace_orders CSV export: one row
+     * per store and business date, with the same column names. LC_Pizza fills the
+     * table from each day's detail orders, summing royalty_obligation,
+     * sales_tax and gross_sales per placed method, so this does the same sums
+     * straight from detail_orders. A store with orders on a day gets a row even
+     * when none of them were marketplace orders (all zeros), as there.
+     *
+     * `stores` is a comma-separated list or an array, in the query string or the
+     * body. Left out (or "all"), it covers every store.
+     */
+    public function thirdPartyMarketplaceReport(Request $request): JsonResponse
+    {
+        $request->headers->set('Accept', 'application/json');
+
+        $input = $request->validate([
+            'start_date' => ['required', 'date_format:Y-m-d'],
+            'end_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+            'stores' => ['nullable'],
+            'stores.*' => ['string'],
+        ]);
+
+        $start = CarbonImmutable::parse($input['start_date'])->startOfDay();
+        $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
+        $stores = $this->parseStoreList($input['stores'] ?? null);
+
+        $rows = $this->thirdPartyMarketplaceRows($stores, $start, $end);
+
+        return response()->json([
+            'filtering' => [
+                'stores' => $stores === [] ? 'all' : $stores,
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+            ],
+            'record_count' => count($rows),
+            'data' => $rows,
+        ]);
+    }
+
+    /**
+     * Marketplace sums per store and business date, oldest first. Hot and archive
+     * cover different dates, so no store/date pair appears in two sources.
+     *
+     * @param string[] $stores empty means all stores
+     * @return array<int, array<string, mixed>>
+     */
+    private function thirdPartyMarketplaceRows(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        // LC_Pizza column name => [placed method, detail_orders column], in its table's column order.
+        $measures = [
+            'doordash_product_costs_Marketplace' => ['DoorDash', 'royalty_obligation'],
+            'doordash_tax_Marketplace' => ['DoorDash', 'sales_tax'],
+            'doordash_order_total_Marketplace' => ['DoorDash', 'gross_sales'],
+            'ubereats_product_costs_Marketplace' => ['UberEats', 'royalty_obligation'],
+            'ubereats_tax_Marketplace' => ['UberEats', 'sales_tax'],
+            'uberEats_order_total_Marketplace' => ['UberEats', 'gross_sales'],
+            'grubhub_product_costs_Marketplace' => ['Grubhub', 'royalty_obligation'],
+            'grubhub_tax_Marketplace' => ['Grubhub', 'sales_tax'],
+            'grubhub_order_total_Marketplace' => ['Grubhub', 'gross_sales'],
+        ];
+
+        $columns = [];
+        foreach ($measures as $alias => [$method, $column]) {
+            $match = $this->storeReportSqlIn('order_placed_method', [$method]);
+            $columns[] = "COALESCE(SUM(CASE WHEN {$match} THEN {$column} END), 0) AS `{$alias}`";
+        }
+
+        $rows = [];
+        foreach ($this->storeReportSources('detail_orders', null, $start, $end) as $query) {
+            if ($stores !== []) {
+                $query->whereIn('franchise_store', $stores);
+            }
+
+            $result = $query
+                ->selectRaw('franchise_store, business_date, ' . implode(', ', $columns))
+                ->groupBy('franchise_store', 'business_date')
+                ->get();
+
+            foreach ($result as $row) {
+                $out = [
+                    'business_date' => CarbonImmutable::parse($row->business_date)->toDateString(),
+                    'franchise_store' => $row->franchise_store,
+                ];
+                foreach (array_keys($measures) as $alias) {
+                    $out[$alias] = round((float) $row->{$alias}, 2);
+                }
+                $rows[] = $out;
+            }
+        }
+
+        usort($rows, fn(array $a, array $b): int => [$a['business_date'], $a['franchise_store']] <=> [$b['business_date'], $b['franchise_store']]);
+
+        return $rows;
+    }
+
+    /**
      * GET /api/reports/sold-with-weekly-by-store?from=YYYY-MM-DD[&to=YYYY-MM-DD][&bucket=in_store][&without_bundle=1]
      *
      * Ported from LC_Pizza. Per store and Tuesday-start week: items sold on orders
