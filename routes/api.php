@@ -74,6 +74,8 @@ Route::get('/reports/phone-and-adjusted-sales', [ReportsController::class, 'phon
 Route::get('/reports/upselling', [ReportsController::class, 'upsellingReport'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Port of LC_Pizza's /reports/store: ?from=&to=[&franchise_store=][&without_bundle=1], no store = all stores.
 Route::get('/reports/store', [ReportsController::class, 'storeReport'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
+// LC_Pizza's third_party_marketplace_orders export rebuilt from detail orders: ?start_date=&end_date=[&stores=a,b], no stores = all stores.
+Route::get('/reports/third-party-marketplace', [ReportsController::class, 'thirdPartyMarketplaceReport'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 // Port of LC_Pizza's /reports/sold-with-weekly-by-store: ?from=[&to=][&bucket=][&without_bundle=1], all stores, Tuesday weeks.
 Route::get('/reports/sold-with-weekly-by-store', [ReportsController::class, 'soldWithWeeklyByStore'])->middleware(['throttle:service-secret', 'throttle:api-export', 'auth.secret.key']);
 
