@@ -69,6 +69,9 @@ class DoughSauceBatchPlanService
         $recipes     = $this->recipeMap($allSources);
         $ingredients = $this->ingredients();
 
+        // One read for every store and target date, not one per store.
+        $morning = $this->single->morningCount($stores, $targetDates);
+
         $out = [];
 
         foreach ($stores as $store) {
@@ -80,7 +83,7 @@ class DoughSauceBatchPlanService
                     array_push($sales, ...($salesByDate[$d] ?? []));
                 }
 
-                $out[$store][$target] = $this->assemble($store, Carbon::parse($target), $dates, $sales, $recipes, $ingredients, $lookback, $includeRefunded);
+                $out[$store][$target] = $this->assemble($store, Carbon::parse($target), $dates, $sales, $recipes, $ingredients, $lookback, $includeRefunded, $morning[$store][$target]);
             }
         }
 
@@ -93,6 +96,7 @@ class DoughSauceBatchPlanService
      * @param  array<int, string>  $dates
      * @param  array<int, array<string, mixed>>  $sales
      * @param  array<string, array<string, array<string, float>>>  $recipes
+     * @param  array<string, float|null>  $morningCount  ingredient key -> count as entered
      * @return array<string, mixed>
      */
     private function assemble(
@@ -104,6 +108,7 @@ class DoughSauceBatchPlanService
         $ingredients,
         int $lookback,
         bool $includeRefunded,
+        array $morningCount,
     ): array {
         $totals    = $this->multiply($sales, $recipes);
         $daysFound = count(array_unique(array_column($sales, 'business_date')));
@@ -146,6 +151,7 @@ class DoughSauceBatchPlanService
             'include_refunded' => $includeRefunded,
             'ingredients'      => $rows,
             'unmapped'         => $this->unmapped($sales, $recipes),
+            'morning_count'    => $morningCount,
         ];
     }
 

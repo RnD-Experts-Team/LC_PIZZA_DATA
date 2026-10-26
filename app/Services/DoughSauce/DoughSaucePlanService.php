@@ -56,6 +56,22 @@ class DoughSaucePlanService
     private const CONSUMING_ACCOUNTS = ['Pizza', 'HNR', 'Bread'];
 
     /**
+     * The first-shift Debrief questions "how many do you have now", per ingredient:
+     * ingredient key => entered_keys.id.
+     *
+     * The ids are the server's own — the keys are created there first, then
+     * filled in here. If a key is deleted and recreated it gets a new id and this
+     * must change with it; until then the ingredient returns null. Never guess
+     * one: an id that belongs to another question would return that question's
+     * answer as dough.
+     */
+    private const MORNING_KEYS = [
+        'dough_18oz' => 30, // How many 18 OZ dough balls do you have now?
+        'dough_10oz' => 31, // How many 10 OZ dough balls do you have now?
+        'sauce'      => 32, // How many sauce containers do you have now?
+    ];
+
+    /**
      * @return array<string, mixed>
      */
     public function dailyPlan(
@@ -116,7 +132,59 @@ class DoughSaucePlanService
             'include_refunded' => $includeRefunded,
             'ingredients'      => $rows,
             'unmapped'         => $this->unmapped($sales, $recipes),
+            // What the first-shift manager counted on `date` itself, returned as
+            // entered. Not part of `base`; the caller does any comparing.
+            'morning_count'    => $this->morningCount([$store], [$date->toDateString()])[$store][$date->toDateString()],
         ];
+    }
+
+    /**
+     * The first-shift count for every store x date, exactly as entered.
+     *
+     * One query for the whole request — the batch plan calls this too, once.
+     * Only the current answer (is_mistaken = 0); if two current rows exist the
+     * newest wins, never a sum. A missing answer is null, not zero.
+     *
+     * @param  array<int, string>  $stores
+     * @param  array<int, string>  $dates  Y-m-d
+     * @return array<string, array<string, array<string, float|null>>>  store -> date -> ingredient -> count
+     */
+    public function morningCount(array $stores, array $dates): array
+    {
+        $out = [];
+
+        foreach ($stores as $store) {
+            foreach ($dates as $date) {
+                $out[$store][$date] = array_fill_keys(array_keys(self::MORNING_KEYS), null);
+            }
+        }
+
+        $keys = array_flip(array_filter(self::MORNING_KEYS));
+
+        if (! $keys || ! $stores || ! $dates) {
+            return $out;
+        }
+
+        // Query builder, not EnteredKeyValue: the model eager-loads attachments.
+        $rows = DB::table('entered_key_values')
+            ->whereIn('key_id', array_keys($keys))
+            ->whereIn('store_id', $stores)
+            ->whereIn('entry_date', $dates)
+            ->where('is_mistaken', false)
+            ->orderBy('id')
+            ->get(['key_id', 'store_id', 'entry_date', 'value_number']);
+
+        foreach ($rows as $row) {
+            $store = (string) $row->store_id;
+            $date  = Carbon::parse($row->entry_date)->toDateString();
+
+            if (isset($out[$store][$date])) {
+                $out[$store][$date][$keys[(int) $row->key_id]] =
+                    $row->value_number === null ? null : (float) $row->value_number;
+            }
+        }
+
+        return $out;
     }
 
     /**
