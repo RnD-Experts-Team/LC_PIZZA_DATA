@@ -66,9 +66,9 @@ class DoughSaucePlanService
      * answer as dough.
      */
     private const MORNING_KEYS = [
-        'dough_18oz' => 30, // How many 18 OZ dough balls do you have now?
-        'dough_10oz' => 31, // How many 10 OZ dough balls do you have now?
-        'sauce'      => 32, // How many sauce containers do you have now?
+        'dough_18oz' => 36, // How many 18 OZ dough balls do you have now?
+        'dough_10oz' => 35, // How many 10 OZ dough balls do you have now?
+        'sauce'      => 34, // How many sauce containers do you have now?
     ];
 
     /**
