@@ -53,6 +53,9 @@ Route::prefix('export')->group(function () {
 Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware(['throttle:api', 'throttle:api-heavy-multi', 'auth.token.store']);
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+// Unified calendar feed. Stores are in the query (stores=a,b): the pizzasys rule
+// must read store_id_sources.query ["stores"] with policy "all".
+Route::get('/calendar/feed', \App\Http\Controllers\API\CalendarFeedController::class)->middleware(['throttle:api', 'auth.token.store']);
 Route::get('/reports/customer-count-and-sales/{store}/{date}', [ReportsController::class, 'customerCountAndSales'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 Route::get('/reports/portal-weekly/{store}/{date}', [ReportsController::class, 'portalWeekly'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 Route::get('/reports/channel-sales/{store}/{date}', [ReportsController::class, 'channelSales'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
