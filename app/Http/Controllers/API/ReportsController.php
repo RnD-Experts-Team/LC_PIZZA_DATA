@@ -4344,18 +4344,67 @@ class ReportsController extends Controller
     ): array {
         $totals = $this->totalSalesByChannelForRange($store, $start, $end);
         $split = $this->websiteAndMobileSplitForRange($store, $start, $end);
+        $counts = $this->customerCountsForRange($store, $start, $end);
 
         return [
+            'customer_count' => $counts['total'],
             'royalty_obligation' => $totals['royalty_obligation'],
             'phone_sales' => $totals['phone_sales'],
+            'phone_customer_count' => $counts['phone'],
             'call_center_sales' => $totals['call_center_sales'],
+            'call_center_customer_count' => $counts['call_center'],
             'drive_thru_sales' => $totals['drive_thru_sales'],
+            'drive_thru_customer_count' => $counts['drive_thru'],
             'website_sales' => $split['website_sales'],
+            'website_customer_count' => $split['website_customer_count'],
             'mobile_sales' => $split['mobile_sales'],
+            'mobile_customer_count' => $split['mobile_customer_count'],
             'doordash_sales' => $totals['doordash_sales'],
+            'doordash_customer_count' => $counts['doordash'],
             'ubereats_sales' => $totals['ubereats_sales'],
+            'ubereats_customer_count' => $counts['ubereats'],
             'grubhub_sales' => $totals['grubhub_sales'],
+            'grubhub_customer_count' => $counts['grubhub'],
         ];
+    }
+
+    /**
+     * Customers for the channels without an in-store/delivery split, plus every
+     * customer in the range as `total`. Same order_placed_method buckets as the
+     * hourly summary's per-channel sales (the summary stores no customer counts
+     * per channel, so this reads detail_orders).
+     */
+    private function customerCountsForRange(
+        string $store,
+        CarbonImmutable $start,
+        CarbonImmutable $end
+    ): array {
+        $key = "customerCountsForRange:{$store}:{$start->toDateString()}:{$end->toDateString()}";
+
+        return $this->remember($key, function () use ($store, $start, $end): array {
+            $row = $this->detailOrdersSource($start, $end)
+                ->where('franchise_store', $store)
+                ->selectRaw("
+                    COALESCE(SUM(customer_count), 0) as total,
+                    COALESCE(SUM(CASE WHEN order_placed_method = 'Phone' THEN customer_count END), 0) as phone,
+                    COALESCE(SUM(CASE WHEN order_placed_method IN ('SoundHoundAgent', 'CallCenterAgent') THEN customer_count END), 0) as call_center,
+                    COALESCE(SUM(CASE WHEN order_placed_method = 'Drive Thru' THEN customer_count END), 0) as drive_thru,
+                    COALESCE(SUM(CASE WHEN order_placed_method = 'DoorDash' THEN customer_count END), 0) as doordash,
+                    COALESCE(SUM(CASE WHEN order_placed_method = 'UberEats' THEN customer_count END), 0) as ubereats,
+                    COALESCE(SUM(CASE WHEN order_placed_method = 'Grubhub' THEN customer_count END), 0) as grubhub
+                ")
+                ->first();
+
+            return [
+                'total' => (int) ($row->total ?? 0),
+                'phone' => (int) ($row->phone ?? 0),
+                'call_center' => (int) ($row->call_center ?? 0),
+                'drive_thru' => (int) ($row->drive_thru ?? 0),
+                'doordash' => (int) ($row->doordash ?? 0),
+                'ubereats' => (int) ($row->ubereats ?? 0),
+                'grubhub' => (int) ($row->grubhub ?? 0),
+            ];
+        });
     }
 
     private function websiteAndMobileSplitForRange(
@@ -4380,7 +4429,11 @@ class ReportsController extends Controller
                 COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN royalty_obligation ELSE 0 END), 0) as website_in_store,
                 COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation ELSE 0 END), 0) as website_delivery,
                 COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN royalty_obligation ELSE 0 END), 0) as mobile_in_store,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method = 'Delivery' THEN royalty_obligation ELSE 0 END), 0) as mobile_delivery
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method = 'Delivery' THEN royalty_obligation ELSE 0 END), 0) as mobile_delivery,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN customer_count ELSE 0 END), 0) as website_in_store_customers,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN customer_count ELSE 0 END), 0) as website_delivery_customers,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method IN ('Register','Drive-Thru','In Store Only') THEN customer_count ELSE 0 END), 0) as mobile_in_store_customers,
+                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile'  AND order_fulfilled_method = 'Delivery' THEN customer_count ELSE 0 END), 0) as mobile_delivery_customers
             ")
             ->first();
 
@@ -4389,16 +4442,31 @@ class ReportsController extends Controller
         $mobIn = round((float) ($row->mobile_in_store ?? 0), 2);
         $mobDel = round((float) ($row->mobile_delivery ?? 0), 2);
 
+        $webInCustomers = (int) ($row->website_in_store_customers ?? 0);
+        $webDelCustomers = (int) ($row->website_delivery_customers ?? 0);
+        $mobInCustomers = (int) ($row->mobile_in_store_customers ?? 0);
+        $mobDelCustomers = (int) ($row->mobile_delivery_customers ?? 0);
+
         return [
             'website_sales' => [
                 'in_store' => $webIn,
                 'delivery' => $webDel,
                 'total' => round($webIn + $webDel, 2),
             ],
+            'website_customer_count' => [
+                'in_store' => $webInCustomers,
+                'delivery' => $webDelCustomers,
+                'total' => $webInCustomers + $webDelCustomers,
+            ],
             'mobile_sales' => [
                 'in_store' => $mobIn,
                 'delivery' => $mobDel,
                 'total' => round($mobIn + $mobDel, 2),
+            ],
+            'mobile_customer_count' => [
+                'in_store' => $mobInCustomers,
+                'delivery' => $mobDelCustomers,
+                'total' => $mobInCustomers + $mobDelCustomers,
             ],
         ];
     }
