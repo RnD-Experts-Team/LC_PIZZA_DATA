@@ -124,7 +124,12 @@ class DoughSauceBatchPlanService
                 }
             }
 
-            $average = $values ? array_sum($values) / count($values) : 0.0;
+            // Same rule as DoughSaucePlanService::dailyPlan(): no rows for the day
+            // at all is null (not aggregated yet), rows but none for this
+            // ingredient is a real 0.
+            $average = $values
+                ? array_sum($values) / count($values)
+                : ($daysFound > 0 ? 0.0 : null);
             $divisor = (float) $ingredient->divisor ?: 1.0;
 
             $rows[] = [
@@ -136,8 +141,8 @@ class DoughSauceBatchPlanService
                     fn ($d) => isset($values[$d]) ? round($values[$d], 4) : null,
                     $dates
                 ),
-                'average' => round($average, 4),
-                'base'    => round($average / $divisor, 4),
+                'average' => $average === null ? null : round($average, 4),
+                'base'    => $average === null ? null : round($average / $divisor, 4),
             ];
         }
 
