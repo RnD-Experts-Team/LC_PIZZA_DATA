@@ -63,4 +63,28 @@ return [
     ],
 
     'x_secret_key' => env('X_SECRET_KEY'),
+
+    // Report builder: each service's API base (with its /api prefix) that serves
+    // GET /report-datasets. Empty = not asked. Data asks itself over loopback.
+    'report_datasets' => [
+        'urls' => [
+            'data' => env('REPORTS_DATA_URL', rtrim((string) env('APP_URL', 'http://localhost'), '/').'/api'),
+            'operations' => env('REPORTS_OPERATIONS_URL'),
+            'toolbox' => env('REPORTS_TOOLBOX_URL'),
+            'hiring' => env('REPORTS_HIRING_URL'),
+            'inventory' => env('REPORTS_INVENTORY_URL'),
+            'maintenance' => env('REPORTS_MAINTENANCE_URL'),
+            'screens' => env('REPORTS_SCREENS_URL'),
+            'audit' => env('REPORTS_AUDIT_URL'),
+        ],
+        // Seconds for a whole preview (every dataset query and retry together) and per catalog call.
+        'preview_timeout' => (int) env('REPORTS_PREVIEW_TIMEOUT', 15),
+        // A full run has no total timeout: it fails only when a service streaming its rows
+        // sends nothing at all for this many seconds.
+        'read_timeout' => (int) env('REPORTS_READ_TIMEOUT', 300),
+        'catalog_timeout' => (int) env('REPORTS_CATALOG_TIMEOUT', 5),
+        // The dashboard's base URL, without a locale: the links in a scheduled report's notification and
+        // email. A scheduled run fails while it is empty.
+        'dashboard_url' => env('REPORTS_DASHBOARD_URL'),
+    ],
 ];
