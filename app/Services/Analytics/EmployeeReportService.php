@@ -60,6 +60,83 @@ class EmployeeReportService
         ];
     }
 
+    /**
+     * The same report for many stores over any range (Business Reports): the
+     * debriefs in the range, counted per type, per business week (one entry
+     * per Tue-Mon week overlapping the range), per store and per employee.
+     * Loads the range's debriefs once; nothing is queried per store or week.
+     */
+    public function getMultiStoreReport(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        $types = EmployeeDebriefType::query()->orderBy('label')->get(['id', 'slug', 'label']);
+
+        $debriefs = EmployeeDebrief::query()
+            ->whereIn('store_id', $stores)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->with(['employee', 'author', 'type'])
+            ->orderByDesc('date')
+            ->orderByDesc('id')
+            ->get();
+
+        $roster = Employee::query()
+            ->whereIn('store_id', $stores)
+            ->orWhereIn('id', $debriefs->pluck('employee_id')->filter()->unique())
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get(['id', 'first_name', 'middle_name', 'last_name', 'store_id', 'active']);
+
+        $weeks = [];
+        for ($w = $start->startOfWeek(CarbonInterface::TUESDAY); $w->lte($end); $w = $w->addWeek()) {
+            $weekDebriefs = $debriefs->filter(fn (EmployeeDebrief $d) => $d->date->betweenIncluded($w, $w->addDays(6)));
+            $weeks[] = [
+                'week_start' => $w->toDateString(),
+                'week_end' => $w->addDays(6)->toDateString(),
+                'total_count' => $weekDebriefs->count(),
+                'by_type' => $this->countsByType($weekDebriefs, $types),
+            ];
+        }
+
+        $debriefsByStore = $debriefs->groupBy('store_id');
+        $debriefsByEmployee = $debriefs->groupBy('employee_id');
+        $summary = $this->buildDebriefSummary($debriefs, $types);
+        $topType = collect($summary['by_type'])->firstWhere('count', '>', 0);
+
+        return [
+            'debrief_types' => $types->map(fn (EmployeeDebriefType $t) => $t->only(['id', 'slug', 'label']))->values()->all(),
+            'summary' => [
+                'active_employees' => $roster->whereIn('store_id', $stores)->where('active', true)->count(),
+                'inactive_employees' => $roster->whereIn('store_id', $stores)->where('active', false)->count(),
+                'total_debriefs' => $debriefs->count(),
+                'most_common_type' => $topType['type'] ?? null,
+                'avg_weekly_debriefs' => $weeks === [] ? null : round(collect($weeks)->avg('total_count'), 2),
+            ],
+            'by_type' => $summary['by_type'],
+            'weeks' => $weeks,
+            'by_store' => collect($stores)->mapWithKeys(fn (string $store) => [$store => [
+                'active_employees' => $roster->where('store_id', $store)->where('active', true)->count(),
+                'total_count' => $debriefsByStore->get($store, collect())->count(),
+                'by_type' => $this->countsByType($debriefsByStore->get($store, collect()), $types),
+            ]])->all(),
+            'events' => collect($summary['events'])
+                ->map(fn (array $e, int $i) => $e + ['store' => (string) $debriefs[$i]->store_id])
+                ->all(),
+            'employees' => $roster->map(function (Employee $employee) use ($debriefsByEmployee, $types) {
+                $own = $debriefsByEmployee->get($employee->id, collect());
+
+                return [
+                    'employee_id' => $employee->id,
+                    'name' => $this->fullName($employee),
+                    'store' => (string) $employee->store_id,
+                    'active' => $employee->active,
+                    'debriefs' => [
+                        'total_count' => $own->count(),
+                        'by_type' => $this->countsByType($own, $types),
+                    ],
+                ];
+            })->values()->all(),
+        ];
+    }
+
     // -------------------------------------------------------------------------
     // Headcount (roster snapshot only — no status history available locally)
     // -------------------------------------------------------------------------

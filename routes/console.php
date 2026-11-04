@@ -257,3 +257,18 @@ Schedule::command('outbox:publish-pending')
     ->withoutOverlapping()
     ->onOneServer()
     ->name('data-publish-pending');
+
+// REPORT BUILDER: runs and their files are kept 7 days
+Schedule::command('reports:prune-runs')
+    ->dailyAt('04:00')
+    ->timezone('America/New_York')
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->name('report-runs-prune');
+
+// REPORT BUILDER: start the report schedules that are due
+Schedule::command('reports:dispatch-due')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onOneServer()
+    ->name('report-schedules-dispatch');

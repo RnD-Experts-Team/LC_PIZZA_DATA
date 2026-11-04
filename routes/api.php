@@ -22,7 +22,13 @@ use App\Http\Controllers\API\{
     LcArchiveExportController,
     HnrPlusController,
     DoughSauceController,
+    ReportBuilderController,
+    ReportDatasetController,
+    ReportRunController,
+    ReportScheduleController,
+    ReportTemplateController,
 };
+use App\Reports\ReportDatasets;
 
 
 /**
@@ -51,7 +57,17 @@ Route::prefix('export')->group(function () {
 });
 
 Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
-Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware(['throttle:api', 'throttle:api-heavy-multi', 'auth.token.store']);
+// Business Reports: Dashboard V1 for many stores over any range. Body {start_date, end_date, stores: [..] | "all"};
+// pizzasys reads the stores from the body. One literal route (and one auth rule) per section.
+Route::middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store'])->prefix('reports/business')->group(function () {
+    Route::post('sales', [ReportsController::class, 'businessSales']);
+    Route::post('operations', [ReportsController::class, 'businessOperations']);
+    Route::post('menu', [ReportsController::class, 'businessMenu']);
+    Route::post('orders', [ReportsController::class, 'businessOrders']);
+    Route::post('quality', [ReportsController::class, 'businessQuality']);
+    Route::post('debriefs', [ReportsController::class, 'businessDebriefs']);
+    Route::post('store-score', [ReportsController::class, 'businessStoreScore']);
+});
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 // Unified calendar feed. Stores are in the query (stores=a,b): the pizzasys rule
 // must read store_id_sources.query ["stores"] with policy "all".
@@ -256,3 +272,49 @@ Route::prefix('dough-sauce')->middleware(['throttle:api', 'auth.token.store'])->
     // pizzasys authorizes each store in `store_ids` (scoped, policy all).
     Route::get('daily-plans', [DoughSauceController::class, 'dailyPlans'])->name('dough-sauce.daily-plans');
 });
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// REPORT BUILDER ROUTES
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+// The report dataset contract, the same in every service: the catalog, and one
+// literal query route per dataset (never a {key} parameter), so each dataset
+// has its own pizzasys auth rule. The body's `stores` are store codes.
+Route::get('/report-datasets', [ReportDatasetController::class, 'catalog'])->middleware(['throttle:api', 'auth.token.store']);
+foreach (ReportDatasets::DATASETS as $dataset) {
+    Route::post('/report-datasets/'.$dataset::KEY.'/query', [ReportDatasetController::class, 'query'])->defaults('dataset', $dataset::KEY)->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+}
+
+// The engine: every service's catalog merged, and a live preview of a definition.
+// Its dataset queries go back through the contract routes above with the caller's token.
+Route::get('/report-builder/catalog', [ReportBuilderController::class, 'catalog'])->middleware(['throttle:api', 'auth.token.store']);
+Route::post('/report-builder/preview', [ReportBuilderController::class, 'preview'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
+
+// Saved templates (index = the caller's own and every org-wide one; only the owner
+// updates or deletes), runs of them in the background, and a run's rows and files.
+// A run is readable by its requester and by the recipients of its schedule.
+Route::get('/report-builder/templates', [ReportTemplateController::class, 'index'])->middleware(['throttle:api', 'auth.token.store']);
+Route::post('/report-builder/templates', [ReportTemplateController::class, 'store'])->middleware(['throttle:api', 'auth.token.store']);
+Route::get('/report-builder/templates/{template}', [ReportTemplateController::class, 'show'])->whereNumber('template')->middleware(['throttle:api', 'auth.token.store']);
+Route::put('/report-builder/templates/{template}', [ReportTemplateController::class, 'update'])->whereNumber('template')->middleware(['throttle:api', 'auth.token.store']);
+Route::delete('/report-builder/templates/{template}', [ReportTemplateController::class, 'destroy'])->whereNumber('template')->middleware(['throttle:api', 'auth.token.store']);
+Route::post('/report-builder/run', [ReportBuilderController::class, 'run'])->middleware(['throttle:api', 'throttle:api-export', 'auth.token.store']);
+Route::get('/report-builder/runs', [ReportRunController::class, 'index'])->middleware(['throttle:api', 'auth.token.store']);
+Route::get('/report-builder/runs/{run}', [ReportRunController::class, 'show'])->middleware(['throttle:api', 'auth.token.store']);
+Route::get('/report-builder/runs/{run}/rows', [ReportRunController::class, 'rows'])->middleware(['throttle:api', 'auth.token.store']);
+Route::get('/report-builder/runs/{run}/download', [ReportRunController::class, 'download'])->middleware(['throttle:api', 'auth.token.store']);
+
+// Schedules: the caller's own (only the owner sees, changes or deletes one). Each
+// holds a pizzasys token minted with the caller's bearer on save, revoked on delete.
+Route::get('/report-builder/schedules', [ReportScheduleController::class, 'index'])->middleware(['throttle:api', 'auth.token.store']);
+Route::post('/report-builder/schedules', [ReportScheduleController::class, 'store'])->middleware(['throttle:api', 'auth.token.store']);
+Route::get('/report-builder/schedules/{schedule}', [ReportScheduleController::class, 'show'])->whereNumber('schedule')->middleware(['throttle:api', 'auth.token.store']);
+Route::put('/report-builder/schedules/{schedule}', [ReportScheduleController::class, 'update'])->whereNumber('schedule')->middleware(['throttle:api', 'auth.token.store']);
+Route::delete('/report-builder/schedules/{schedule}', [ReportScheduleController::class, 'destroy'])->whereNumber('schedule')->middleware(['throttle:api', 'auth.token.store']);
+
+// A run's file for a server-to-server fetch (Notifications attaching it to an email):
+// a temporary signed URL (24 h) is the only credential. The signature covers the path
+// only (URL::temporarySignedRoute(..., absolute: false)), so it still validates behind
+// a proxy that changes the host or scheme.
+Route::get('/report-builder/files/{run}', [ReportRunController::class, 'file'])->middleware('signed:relative')->name('report-builder.files');

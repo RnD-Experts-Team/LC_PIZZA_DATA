@@ -44,6 +44,19 @@ return [
             'after_commit' => false,
         ],
 
+        // Report builder runs (RunReportJob, no timeout) on their own workers, so
+        // they never wait behind, or hold up, the default queue. retry_after is a
+        // week: a running report is never handed out again while it works. A
+        // worker that died is noticed by the run's heartbeat (reports:dispatch-due).
+        'reports' => [
+            'driver' => 'database',
+            'connection' => env('DB_QUEUE_CONNECTION'),
+            'table' => 'jobs',
+            'queue' => 'reports',
+            'retry_after' => 604800,
+            'after_commit' => false,
+        ],
+
         'beanstalkd' => [
             'driver' => 'beanstalkd',
             'host' => env('BEANSTALKD_QUEUE_HOST', 'localhost'),

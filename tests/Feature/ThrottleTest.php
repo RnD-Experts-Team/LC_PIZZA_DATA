@@ -251,16 +251,6 @@ class ThrottleTest extends TestCase
         $this->assertSame([60, 1200], $target($limits('POST')));
     }
 
-    public function test_the_multi_store_dashboard_has_its_own_tighter_limits(): void
-    {
-        $limits = collect(RateLimiter::limiter('api-heavy-multi')(
-            Request::create('/api/reports/multi-dashboard', 'POST', server: ['HTTP_AUTHORIZATION' => 'Bearer 1|test-token'])
-        ));
-
-        $this->assertSame([20, 5, 30], $limits->pluck('maxAttempts')->all());
-        $this->assertSame([60, 60, 3600], $limits->pluck('decaySeconds')->all());
-    }
-
     public function test_keys_hash_the_token_and_fall_back_to_the_ip(): void
     {
         $key = fn (array $server) => RateLimiter::limiter('api-upload')(Request::create('/x', 'POST', server: $server))[0]->key;

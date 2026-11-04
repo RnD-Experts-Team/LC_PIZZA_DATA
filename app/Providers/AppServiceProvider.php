@@ -82,13 +82,6 @@ class AppServiceProvider extends ServiceProvider
             Limit::perHour(200)->by('target:h:'.self::tokenKey($request)),
         ]);
 
-        // Up to 100 stores (or all) over up to 366 days in one request.
-        RateLimiter::for('api-heavy-multi', fn (Request $request) => [
-            Limit::perMinute(20)->by(self::tokenKey($request)),
-            Limit::perMinute(5)->by('target:m:'.self::tokenKey($request)),
-            Limit::perHour(30)->by('target:h:'.self::tokenKey($request)),
-        ]);
-
         RateLimiter::for('api-export', fn (Request $request) => [
             Limit::perMinute(10)->by('m:'.self::tokenKey($request)),
             Limit::perHour(100)->by('h:'.self::tokenKey($request)),

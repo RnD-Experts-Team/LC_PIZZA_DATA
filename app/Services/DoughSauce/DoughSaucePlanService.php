@@ -9,8 +9,11 @@ use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 
 /**
- * How much dough and sauce a store needed on the same weekday, averaged over the
- * last four of them.
+ * How much dough and sauce a store's sales used on one day — that day itself.
+ *
+ * Until 2026-11 this was the same weekday averaged over the last four of them (a
+ * forecast); see sourceDates() for why it changed. The notes below on recipes,
+ * the two reads and `unmapped` still hold.
  *
  * WHAT THIS REPLACES
  * ------------------
@@ -102,7 +105,12 @@ class DoughSaucePlanService
                 // reported through days_found rather than being averaged as a zero.
             }
 
-            $average = $values ? array_sum($values) / count($values) : 0.0;
+            // No sales rows at all for the day means it has not been aggregated
+            // yet: null, not zero. A day that has rows but none for this
+            // ingredient genuinely used none of it: 0.
+            $average = $values
+                ? array_sum($values) / count($values)
+                : ($daysFound > 0 ? 0.0 : null);
             $divisor = (float) $ingredient->divisor ?: 1.0;
 
             $rows[] = [
@@ -116,9 +124,9 @@ class DoughSaucePlanService
                     fn ($d) => isset($values[$d]) ? round($values[$d], 4) : null,
                     $dates
                 ),
-                'average'  => round($average, 4),
-                // What the caller multiplies by its buffer.
-                'base'     => round($average / $divisor, 4),
+                'average'  => $average === null ? null : round($average, 4),
+                // What the store sold that day, in balls / containers.
+                'base'     => $average === null ? null : round($average / $divisor, 4),
             ];
         }
 
@@ -188,23 +196,21 @@ class DoughSaucePlanService
     }
 
     /**
-     * The same weekday, `$lookback` times back.
+     * The date itself — `base` is what the store actually sold that day.
      *
-     * Plain date arithmetic — the previous four Fridays are just -7, -14, -21, -28.
-     * No accounting calendar is involved here; that belongs to whoever measures
-     * weeks, which is not this service.
+     * It used to be the same weekday four times back (-7, -14, -21, -28), averaged:
+     * a forecast. The client wants the real figure instead, even though it only
+     * exists once the day has been aggregated (the next morning's 10:30 rebuild);
+     * until then `base` is null.
+     *
+     * `$lookback` is still accepted so existing callers do not get a 422, and is
+     * ignored. The batch plan calls this too, so both endpoints change together.
      *
      * @return array<int, string>
      */
     public function sourceDates(CarbonInterface $date, int $lookback = 4): array
     {
-        $dates = [];
-
-        for ($i = $lookback; $i >= 1; $i--) {
-            $dates[] = $date->copy()->subWeeks($i)->toDateString();
-        }
-
-        return $dates;
+        return [$date->toDateString()];
     }
 
     /**
