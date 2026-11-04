@@ -314,7 +314,7 @@ class CalendarFeedController extends Controller
                 $change = ($sales !== null && $lySales) ? round(($sales - $lySales) / $lySales * 100, 1) : null;
 
                 $title = $sales !== null
-                    ? 'Sales $' . number_format($sales) . ($change !== null ? ($change >= 0 ? ' ▲ ' : ' ▼ ') . abs($change) . '%' : '')
+                    ? 'Sales $' . number_format($sales) . ($change !== null ? ' (' . ($change > 0 ? '+' : ($change < 0 ? '-' : '')) . abs($change) . '%)' : '')
                     : 'LY $' . number_format((float) $lySales);
 
                 $events[] = $this->event(
