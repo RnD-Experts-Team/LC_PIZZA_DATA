@@ -57,7 +57,17 @@ Route::prefix('export')->group(function () {
 });
 
 Route::get('/reports/dashboard/{store}/{date}', [ReportsController::class, 'dashboard'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
-Route::post('/reports/multi-dashboard', [ReportsController::class, 'multiStoreDashboard'])->middleware(['throttle:api', 'throttle:api-heavy-multi', 'auth.token.store']);
+// Business Reports: Dashboard V1 for many stores over any range. Body {start_date, end_date, stores: [..] | "all"};
+// pizzasys reads the stores from the body. One literal route (and one auth rule) per section.
+Route::middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store'])->prefix('reports/business')->group(function () {
+    Route::post('sales', [ReportsController::class, 'businessSales']);
+    Route::post('operations', [ReportsController::class, 'businessOperations']);
+    Route::post('menu', [ReportsController::class, 'businessMenu']);
+    Route::post('orders', [ReportsController::class, 'businessOrders']);
+    Route::post('quality', [ReportsController::class, 'businessQuality']);
+    Route::post('debriefs', [ReportsController::class, 'businessDebriefs']);
+    Route::post('store-score', [ReportsController::class, 'businessStoreScore']);
+});
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 // Unified calendar feed. Stores are in the query (stores=a,b): the pizzasys rule
 // must read store_id_sources.query ["stores"] with policy "all".
