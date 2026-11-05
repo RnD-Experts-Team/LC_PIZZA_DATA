@@ -252,6 +252,8 @@ class DueKeyResolverService
             ->where('user_store_roles.active', true)
             ->whereIn('user_store_roles.role_name', $roles)
             ->select([
+                // The key is needed: Eloquent's Collection::merge() drops models without one.
+                'user_store_roles.id',
                 'user_store_roles.user_id',
                 'user_store_roles.role_name',
                 'users.name as user_name',
