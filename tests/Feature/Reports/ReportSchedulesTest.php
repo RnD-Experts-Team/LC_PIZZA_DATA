@@ -252,6 +252,18 @@ class ReportSchedulesTest extends TestCase
         $this->assertSame('2027-11-02 00:00:00', ReportSchedule::query()->find($id)->token_expires_at->toDateTimeString());
     }
 
+    public function test_the_token_routes_are_found_when_the_auth_base_url_ends_in_api_v1(): void
+    {
+        // The testing .env shape: base URL with /api/v1, verify path without it.
+        config(['services.auth_server.base_url' => 'http://auth.test/api/v1', 'services.auth_server.verify_path' => '/auth/token-verify']);
+
+        $id = $this->postJson('/api/report-builder/schedules', $this->body(), $this->headers())->assertCreated()->json('id');
+        $this->assertSame('http://auth.test/api/v1/auth/report-schedule-tokens', $this->mints()[0][0]->url());
+
+        $this->deleteJson("/api/report-builder/schedules/{$id}", [], $this->headers())->assertOk();
+        $this->assertSame("http://auth.test/api/v1/auth/report-schedule-tokens/{$id}", $this->revokes()[0][0]->url());
+    }
+
     public function test_a_schedule_is_checked_before_any_token_is_asked_for(): void
     {
         $theirs = $this->template(owner: self::STRANGER)->id;

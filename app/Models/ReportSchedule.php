@@ -131,10 +131,16 @@ class ReportSchedule extends Model
         return in_array($status, [204, 404], true);
     }
 
-    /** pizzasys works out the token's abilities from the user's rules, so it gets longer than a token check. */
+    /**
+     * pizzasys works out the token's abilities from the user's rules, so it gets longer than a token check.
+     * The paths are full (/api/v1/...), so any /api... the base URL ends with is dropped, as User does:
+     * AUTH_SERVER_BASE_URL may be the bare host or end in /api/v1.
+     */
     private function pizzasys(#[\SensitiveParameter] string $authorization): PendingRequest
     {
-        return Http::baseUrl(rtrim((string) config('services.auth_server.base_url'), '/'))
+        $host = preg_replace('~/api(?:/.*)?$~i', '', rtrim((string) config('services.auth_server.base_url'), '/'));
+
+        return Http::baseUrl(rtrim((string) $host, '/'))
             ->withHeaders(['Authorization' => $authorization])
             ->acceptJson()
             ->timeout(10);
