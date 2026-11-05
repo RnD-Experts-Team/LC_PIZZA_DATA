@@ -170,6 +170,16 @@ class ReportsController extends Controller
         'all' => 'register',
     ];
 
+    /**
+     * DSPR total tips = total tips minus the delivery-related tips, so drivers' tips
+     * don't show up as store tips. These stores only have half of the delivery tips
+     * deducted; every other store has all of them deducted.
+     */
+    private const DSPR_HALF_DELIVERY_TIPS_STORES = [
+        '03795-00002', '03795-00003', '03795-00007', '03795-00008', '03795-00010',
+        '03795-00012', '03795-00016', '03795-00027', '03795-00031',
+    ];
+
     /** Unit prices for "All" stores are read from this store. */
     private const STORE_REPORT_PRICE_STORE_FALLBACK = '03795-00001';
 
@@ -2139,6 +2149,20 @@ class ReportsController extends Controller
     // Core builder (cached)
     // ---------------------------------------------------------------------
 
+    /**
+     * Total tips for the DSPR: total tips less the delivery-related tips (half of
+     * them for DSPR_HALF_DELIVERY_TIPS_STORES, all of them for every other store).
+     */
+    private function dsprTotalTips(string $store, CarbonImmutable $start, CarbonImmutable $end): float
+    {
+        $totalTips = $this->summaryQuery->getTotalTips($store, $start->toMutable(), $end->toMutable());
+        $deliveryTips = $this->summaryQuery->getDeliveryTips($store, $start->toMutable(), $end->toMutable());
+
+        $share = in_array($store, self::DSPR_HALF_DELIVERY_TIPS_STORES, true) ? 0.5 : 1.0;
+
+        return round($totalTips - ($deliveryTips * $share), 2);
+    }
+
     private function buildReport(string $store, string $date): array
     {
         $day = CarbonImmutable::parse($date)->startOfDay();
@@ -2174,11 +2198,7 @@ class ReportsController extends Controller
         $weekToDateDeposit = $this->totalDepositForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateWasteAlta = $this->altaInventoryWasteForRange($store, $weekToDateStart, $weekToDateEnd);
         $weekToDateWasteNormal = $this->normalWasteForRange($store, $weekToDateStart, $weekToDateEnd);
-        $weekToDateTips = $this->summaryQuery->getTotalTips(
-            $store,
-            $weekToDateStart->toMutable(),
-            $weekToDateEnd->toMutable()
-        );
+        $weekToDateTips = $this->dsprTotalTips($store, $weekToDateStart, $weekToDateEnd);
 
         $thisWeekByDay = $this->salesByDay($store, $weekStart, $weekEnd);
         $previousWeekByDay = $this->salesByDay($store, $prevWeekStart, $prevWeekEnd);
@@ -2379,7 +2399,7 @@ class ReportsController extends Controller
                     'normal' => $this->averageValue($weekToDateWasteNormal, $weekToDateDayCount),
                 ],
 
-                'total_tips' => $this->summaryQuery->getTotalTips($store, $day->toMutable(), $day->toMutable()),
+                'total_tips' => $this->dsprTotalTips($store, $day, $day),
                 'total_tips_week_to_date' => $weekToDateTips,
                 'total_tips_week_to_date_avg' => $this->averageValue($weekToDateTips, $weekToDateDayCount),
 
