@@ -50,6 +50,10 @@ trait BuildsBusinessReports
     private const BUSINESS_MAIN_INGREDIENT_IDS = ['1515', '1103', '3813', '1042', '404', '406'];
     private const BUSINESS_PAPER_INGREDIENT_IDS = ['4659', '4660/4621', '5858', '4540', '4342'];
 
+    /** Cache seconds: a range that is over, and one that still includes today. */
+    private const BUSINESS_PAST_TTL = 86400;
+    private const BUSINESS_LIVE_TTL = 300;
+
     /** How many rows the "top" lists keep (combined; per store keeps 5). */
     private const BUSINESS_TOP_LIMIT = 10;
 
@@ -87,6 +91,26 @@ trait BuildsBusinessReports
         return $this->businessSection($request, 'debriefs', fn (array $stores, CarbonImmutable $s, CarbonImmutable $e) => $employees->getMultiStoreReport($stores, $s, $e));
     }
 
+    /**
+     * V1's Sales History for the loaded stores together: every week since the
+     * first data (the picked range is ignored, as on V1), rolled up into
+     * fiscal periods, quarters and years. It always runs to today, so it is
+     * cached for minutes, never for a day.
+     */
+    public function businessSalesHistory(Request $request): JsonResponse
+    {
+        return $this->businessSection(
+            $request,
+            'sales-history',
+            fn (array $stores, CarbonImmutable $s, CarbonImmutable $e) => $this->salesHistoryFor(
+                $stores,
+                count($stores) === 1 ? $stores[0] : count($stores) . ' stores',
+                CarbonImmutable::today()
+            ),
+            self::BUSINESS_LIVE_TTL
+        );
+    }
+
     public function businessStoreScore(Request $request): JsonResponse
     {
         return $this->businessSection($request, 'store-score', fn (array $stores, CarbonImmutable $s, CarbonImmutable $e) => $this->buildBusinessStoreScores($stores, $s, $e));
@@ -97,8 +121,9 @@ trait BuildsBusinessReports
      * when the range is over, five minutes while it still includes today.
      *
      * @param callable(array, CarbonImmutable, CarbonImmutable): array $build
+     * @param int|null $ttl seconds; null = by the range (a day once it is over)
      */
-    private function businessSection(Request $request, string $section, callable $build): JsonResponse
+    private function businessSection(Request $request, string $section, callable $build, ?int $ttl = null): JsonResponse
     {
         $request->headers->set('Accept', 'application/json');
 
@@ -119,7 +144,7 @@ trait BuildsBusinessReports
             $start->toDateString(),
             $end->toDateString()
         );
-        $ttl = $end->lt(CarbonImmutable::today()) ? 86400 : 300;
+        $ttl ??= $end->lt(CarbonImmutable::today()) ? self::BUSINESS_PAST_TTL : self::BUSINESS_LIVE_TTL;
 
         $payload = Cache::remember($key, $ttl, fn (): array => [
             'meta' => $this->businessMeta($stores, $start, $end),

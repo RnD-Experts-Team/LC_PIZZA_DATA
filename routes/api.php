@@ -67,6 +67,7 @@ Route::middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store'])->p
     Route::post('quality', [ReportsController::class, 'businessQuality']);
     Route::post('debriefs', [ReportsController::class, 'businessDebriefs']);
     Route::post('store-score', [ReportsController::class, 'businessStoreScore']);
+    Route::post('sales-history', [ReportsController::class, 'businessSalesHistory']);
 });
 Route::get('/reports/dspr/{store}/{date}', [ReportsController::class, 'dsprLite'])->middleware(['throttle:api', 'throttle:api-heavy', 'auth.token.store']);
 // Unified calendar feed. Stores are in the query (stores=a,b): the pizzasys rule
