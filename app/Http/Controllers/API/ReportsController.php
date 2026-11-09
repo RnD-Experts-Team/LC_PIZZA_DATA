@@ -1768,14 +1768,23 @@ class ReportsController extends Controller
      */
     private function buildSalesHistory(string $store, string $date): array
     {
-        $day = CarbonImmutable::parse($date)->startOfDay();
+        return $this->salesHistoryFor([$store], $store, CarbonImmutable::parse($date)->startOfDay());
+    }
+
+    /**
+     * The sales history of one or more stores together (Business Reports sums
+     * the loaded stores): every week since the first data, whatever range is
+     * picked — the same series V1's Sales History card shows for one store.
+     */
+    private function salesHistoryFor(array $stores, string $label, CarbonImmutable $day): array
+    {
 
         // Bucket each business_date into its Tuesday-starting business week (matches
         // isoBusinessWeek()'s Tue-Mon def). DAYOFWEEK: Sun=1..Sat=7 (locale-independent),
         // so (DAYOFWEEK + 4) % 7 = days to subtract to reach the week's Tuesday.
         $weekStartExpr = 'DATE_SUB(business_date, INTERVAL ((DAYOFWEEK(business_date) + 4) % 7) DAY)';
 
-        $rows = DailyStoreSummary::where('franchise_store', $store)
+        $rows = DailyStoreSummary::whereIn('franchise_store', $stores)
             ->selectRaw(
                 "{$weekStartExpr} as week_start,"
                 . ' COALESCE(SUM(royalty_obligation), 0) as total_sales,'
@@ -1856,7 +1865,7 @@ class ReportsController extends Controller
 
         return [
             'filtering' => [
-                'store' => $store,
+                'store' => $label,
                 'date' => $day->toDateString(),
             ],
             'weeks' => $weeks,
