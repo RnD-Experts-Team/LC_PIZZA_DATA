@@ -10,15 +10,17 @@ use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 
 /**
- * Finds store-days whose order lines were imported more than once and, with
- * --apply, removes the extra copies.
+ * Finds orders whose lines were imported more than once and, with --apply,
+ * removes the older copies.
  *
- * Order lines have no unique key, so a store-day imported twice at the same
- * time holds every line twice. A store-day is an exact repeat when EVERY
- * distinct line appears a multiple of the same number of times (×2, ×3 …);
- * then one copy of each is kept. A normal day (a few lines legitimately
- * repeated within an order) is never touched. Store-days that look partly
- * duplicated are only listed, to be re-imported from their source files.
+ * Each import writes a store-day's lines as one block of consecutive ids, so
+ * a store-day imported again holds a second block far from the first. The
+ * blocks are not always identical: a later export can be partial, or carry
+ * times without seconds, so lines are matched by ORDER, not by content. Two
+ * blocks are copies of each other when they share orders (MIN_SHARED_ORDERS
+ * or more); then each shared order keeps only its lines in the newest block.
+ * Lines repeated inside one block (the same item twice in an order) are
+ * never touched, and a day imported once is never touched.
  *
  * Read-only unless --apply. --rebuild then rebuilds hourly → daily (with the
  * order extras) → weeks/periods/quarters/years for the repaired days only.
@@ -29,25 +31,17 @@ class DedupeOrderLinesCommand extends Command
         {--from= : First business date (Y-m-d)}
         {--to= : Last business date (Y-m-d)}
         {--store=* : Only these stores (store numbers)}
-        {--apply : Delete the extra copies (otherwise only report)}
+        {--apply : Delete the older copies (otherwise only report)}
         {--rebuild : After --apply, rebuild the summaries of the repaired days}
         {--pause-ms=250 : Pause between days, to spare the shared MySQL server}';
 
     protected $description = 'Find (and with --apply remove) order lines imported more than once.';
 
-    /** Every content column of a line: identical in all of them = the same line imported again. */
-    private const LINE_COLUMNS = [
-        'order_id', 'item_id', 'date_time_placed', 'date_time_fulfilled', 'menu_item_name', 'menu_item_account',
-        'bundle_name', 'net_amount', 'quantity', 'royalty_item', 'taxable_item', 'tax_included_amount', 'employee',
-        'override_approval_employee', 'order_placed_method', 'order_fulfilled_method', 'modified_order_amount',
-        'modification_reason', 'payment_methods', 'refunded',
-    ];
+    /** Ids further apart than this belong to different imports (one order's lines are always consecutive). */
+    private const IMPORT_GAP = 1000;
 
-    /** A day not an exact repeat, but with this share of its lines in identical groups, is listed for re-import. */
-    private const PARTIAL_SHARE = 0.25;
-
-    /** Fewer distinct lines than this can repeat by chance: never treated as a re-import. */
-    private const MIN_DISTINCT_LINES = 10;
+    /** Two import blocks sharing at least this many orders are copies of the same data. */
+    private const MIN_SHARED_ORDERS = 3;
 
     private const DELETE_CHUNK = 1000;
 
@@ -65,9 +59,8 @@ class DedupeOrderLinesCommand extends Command
         $apply = (bool) $this->option('apply');
         $pauseMs = max(0, (int) $this->option('pause-ms'));
 
-        $exact = [];
-        $partial = [];
-        $removed = 0;
+        $byDate = [];
+        $totals = ['store_days' => 0, 'orders' => 0, 'lines' => 0, 'extra' => 0];
         $repairedDates = [];
 
         for ($day = $from; $day->lte($to); $day = $day->addDay()) {
@@ -78,45 +71,44 @@ class DedupeOrderLinesCommand extends Command
                 $query->whereIn('franchise_store', $stores);
             }
 
-            $groups = $query
-                ->selectRaw('franchise_store, COUNT(*) as copies, GROUP_CONCAT(id ORDER BY id) as ids')
-                ->groupBy('franchise_store', ...self::LINE_COLUMNS)
-                ->get()
+            $lines = $query->whereNotNull('order_id')
+                ->orderBy('franchise_store')
+                ->orderBy('id')
+                ->get(['id', 'franchise_store', 'order_id'])
                 ->groupBy('franchise_store');
 
-            foreach ($groups as $store => $lines) {
-                $counts = $lines->pluck('copies')->map(fn ($c) => (int) $c)->all();
-                $total = array_sum($counts);
-                $times = array_reduce($counts, fn (int $g, int $c) => $this->gcd($g, $c), 0);
-
-                if ($times >= 2 && count($counts) >= self::MIN_DISTINCT_LINES) {
-                    $extra = [];
-                    foreach ($lines as $line) {
-                        $ids = explode(',', (string) $line->ids);
-                        // Keep the first copy of each repeat, drop the rest.
-                        $extra = array_merge($extra, array_slice($ids, intdiv(count($ids), $times)));
-                    }
-                    $exact[] = [$day->toDateString(), $store, $total, "×{$times}", count($extra)];
-
-                    if ($apply) {
-                        $connection->transaction(function () use ($connection, $table, $day, $extra): void {
-                            foreach (array_chunk($extra, self::DELETE_CHUNK) as $chunk) {
-                                $connection->table($table)
-                                    ->where('business_date', $day->toDateString())
-                                    ->whereIn('id', $chunk)
-                                    ->delete();
-                            }
-                        });
-                        $removed += count($extra);
-                        $repairedDates[$day->toDateString()] = true;
-                    }
-
+            $dayStores = 0;
+            $dayOrders = 0;
+            $dayLines = 0;
+            $extra = [];
+            foreach ($lines as $storeLines) {
+                [$storeExtra, $orders] = $this->olderCopies($storeLines->all());
+                if ($storeExtra === []) {
                     continue;
                 }
+                $dayStores++;
+                $dayOrders += $orders;
+                $dayLines += $storeLines->count();
+                array_push($extra, ...$storeExtra);
+            }
 
-                $repeated = array_sum(array_filter($counts, fn (int $c) => $c > 1));
-                if ($total > 0 && $repeated / $total >= self::PARTIAL_SHARE) {
-                    $partial[] = [$day->toDateString(), $store, $total, round($repeated / $total * 100) . '%'];
+            if ($extra !== []) {
+                $byDate[] = [$day->toDateString(), $dayStores, $dayOrders, $dayLines, count($extra)];
+                $totals['store_days'] += $dayStores;
+                $totals['orders'] += $dayOrders;
+                $totals['lines'] += $dayLines;
+                $totals['extra'] += count($extra);
+
+                if ($apply) {
+                    $connection->transaction(function () use ($connection, $table, $day, $extra): void {
+                        foreach (array_chunk($extra, self::DELETE_CHUNK) as $chunk) {
+                            $connection->table($table)
+                                ->where('business_date', $day->toDateString())
+                                ->whereIn('id', $chunk)
+                                ->delete();
+                        }
+                    });
+                    $repairedDates[$day->toDateString()] = true;
                 }
             }
 
@@ -126,16 +118,77 @@ class DedupeOrderLinesCommand extends Command
             }
         }
 
-        $this->info(count($exact) . ' store-days with every line repeated (exact re-imports)' . ($apply ? ", {$removed} extra lines removed:" : ' — nothing removed (add --apply):'));
-        $this->table(['Date', 'Store', 'Lines', 'Imported', 'Extra lines'], $exact);
-        $this->warn(count($partial) . ' store-days partly duplicated — re-import these from their source files:');
-        $this->table(['Date', 'Store', 'Lines', 'In identical groups'], $partial);
+        $this->table(['Date', 'Stores', 'Orders imported again', 'Lines', $apply ? 'Removed' : 'Would remove'], $byDate);
+        $this->info(sprintf(
+            '%d store-days, %d orders imported more than once: %d of their %d lines are older copies%s.',
+            $totals['store_days'],
+            $totals['orders'],
+            $totals['extra'],
+            $totals['lines'],
+            $apply ? ' and were removed' : ' (nothing removed — add --apply)',
+        ));
 
         if ($apply && $this->option('rebuild') && $repairedDates !== []) {
             $this->rebuild($aggregation, array_keys($repairedDates), $pauseMs);
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * One store-day's lines (sorted by id) → [ids of the older copies, orders imported again].
+     *
+     * @param  list<object{id: int, order_id: string}>  $lines
+     * @return array{0: list<int>, 1: int}
+     */
+    private function olderCopies(array $lines): array
+    {
+        // Split into import blocks at every large id jump.
+        $blockOf = [];
+        $ordersIn = [];
+        $block = 0;
+        $previous = null;
+        foreach ($lines as $i => $line) {
+            if ($previous !== null && $line->id - $previous > self::IMPORT_GAP) {
+                $block++;
+            }
+            $previous = $line->id;
+            $blockOf[$i] = $block;
+            $ordersIn[$block][$line->order_id] = true;
+        }
+        if ($block === 0) {
+            return [[], 0];
+        }
+
+        // Blocks that share orders are copies of each other.
+        $copies = [];
+        for ($a = 0; $a < $block; $a++) {
+            for ($b = $a + 1; $b <= $block; $b++) {
+                if (count(array_intersect_key($ordersIn[$a], $ordersIn[$b])) >= self::MIN_SHARED_ORDERS) {
+                    $copies["{$a}|{$b}"] = true;
+                }
+            }
+        }
+        if ($copies === []) {
+            return [[], 0];
+        }
+
+        // Each order keeps its lines in the newest block holding it; its lines in older copies go.
+        $newest = [];
+        foreach ($lines as $i => $line) {
+            $newest[$line->order_id] = max($newest[$line->order_id] ?? 0, $blockOf[$i]);
+        }
+        $extra = [];
+        $orders = [];
+        foreach ($lines as $i => $line) {
+            $keep = $newest[$line->order_id];
+            if ($blockOf[$i] < $keep && isset($copies["{$blockOf[$i]}|{$keep}"])) {
+                $extra[] = (int) $line->id;
+                $orders[$line->order_id] = true;
+            }
+        }
+
+        return [$extra, count($orders)];
     }
 
     /** Hourly → daily (with order extras) for each repaired day, then every week/period/quarter/year they touch. */
@@ -174,10 +227,5 @@ class DedupeOrderLinesCommand extends Command
             $aggregation->updateYearlySummariesYear($year);
         }
         $this->info('Summaries rebuilt: ' . count($weeks) . ' weeks, ' . count($periods) . ' periods, ' . count($quarters) . ' quarters, ' . count($years) . ' years.');
-    }
-
-    private function gcd(int $a, int $b): int
-    {
-        return $b === 0 ? $a : $this->gcd($b, $a % $b);
     }
 }
