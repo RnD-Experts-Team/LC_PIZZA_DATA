@@ -321,7 +321,8 @@ class ManualCsvImportController extends Controller
             // Only these stages (e.g. weekly,monthly,quarterly,yearly to rebuild the
             // summaries without re-reading the raw orders); otherwise by `type`.
             'stages' => 'nullable|array',
-            'stages.*' => 'in:hourly,daily,weekly,monthly,quarterly,yearly',
+            // extras = only daily_order_extras, without rebuilding the daily rows.
+            'stages.*' => 'in:hourly,daily,extras,weekly,monthly,quarterly,yearly',
             // Pause between units, to spare the MySQL server every service shares.
             'pause_ms' => 'nullable|integer|min:0',
         ]);

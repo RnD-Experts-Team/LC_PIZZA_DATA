@@ -942,6 +942,31 @@ class AggregationService
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
+     * Only the day's order extras — for back-filling them without rebuilding
+     * the daily rows from today's raw data (the "extras" stage).
+     */
+    public function updateDailyOrderExtras(Carbon $date): array
+    {
+        try {
+            $written = $this->aggregateDailyOrderExtras($date);
+        } catch (\Throwable $e) {
+            Log::error('Daily order extras failed', ['business_date' => $date->toDateString(), 'exception' => $e->getMessage()]);
+
+            return $this->stageResult(stage: 'extras', status: 'failed', message: $e->getMessage(), extra: ['business_date' => $date->toDateString()]);
+        }
+
+        return $this->stageResult(
+            stage: 'extras',
+            status: 'success',
+            sourceRows: $written,
+            rowsWritten: $written,
+            storesFound: $written,
+            message: 'Order extras written.',
+            extra: ['business_date' => $date->toDateString()],
+        );
+    }
+
+    /**
      * The day's order-level figures for every store (daily_order_extras):
      * channel customers and the website/mobile split, special-items HnR and
      * upselling — a few queries over that one day's raw orders, grouped by
@@ -1421,24 +1446,25 @@ class AggregationService
                 // A week's days sold = its quantity ÷ its quantity per day sold.
                 ->selectRaw('COALESCE(SUM(quantity_sold / NULLIF(avg_daily_quantity, 0)), 0) as days_sold');
         $items = $query
+            // One row per store and item, even when the item was sold under more
+            // than one name/account in the bucket (one name is kept).
             ->selectRaw('
                 franchise_store,
                 item_id,
-                menu_item_name,
-                menu_item_account,
+                MAX(menu_item_name) as menu_item_name,
+                MAX(menu_item_account) as menu_item_account,
                 SUM(quantity_sold) as quantity_sold,
                 SUM(gross_sales) as gross_sales,
                 SUM(net_sales) as net_sales,
                 SUM(delivery_quantity) as delivery_quantity,
                 SUM(carryout_quantity) as carryout_quantity
             ')
-            ->groupBy('franchise_store', 'item_id', 'menu_item_name', 'menu_item_account')
+            ->groupBy('franchise_store', 'item_id')
             ->get();
 
         $rows = [];
         foreach ($items as $item) {
             $quantity = (float) $item->quantity_sold;
-            // One row per store and item: a later group for the same item overwrites an earlier one.
             $rows[$item->franchise_store . '|' . $item->item_id] = ['franchise_store' => (string) $item->franchise_store] + $bucket['key'] + [
                 'item_id' => $item->item_id,
                 'menu_item_name' => $item->menu_item_name,

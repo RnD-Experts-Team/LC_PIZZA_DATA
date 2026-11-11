@@ -23,6 +23,8 @@ class RunAggregationRebuildJob implements ShouldQueue
     protected array $stageOrder = [
         'hourly' => 1,
         'daily' => 2,
+        // Only daily_order_extras, from the raw orders; daily rows untouched.
+        'extras' => 2,
         'weekly' => 3,
         'monthly' => 4,
         'quarterly' => 5,
@@ -265,6 +267,7 @@ class RunAggregationRebuildJob implements ShouldQueue
             $units = array_merge($units, match ($stage) {
                 'hourly' => $this->buildDailyUnits($start, $end, 'hourly'),
                 'daily' => $this->buildDailyUnits($start, $end, 'daily'),
+                'extras' => $this->buildDailyUnits($start, $end, 'extras'),
                 'weekly' => $this->buildWeeklyUnits($start, $end),
                 'monthly' => $this->buildMonthlyUnits($start, $end),
                 'quarterly' => $this->buildQuarterlyUnits($start, $end),
@@ -382,6 +385,7 @@ class RunAggregationRebuildJob implements ShouldQueue
         return match ($unit['stage']) {
             'hourly' => $service->updateHourlySummaries(Carbon::parse($unit['date']), $this->aggregationId),
             'daily' => $service->updateDailySummaries(Carbon::parse($unit['date']), $this->aggregationId),
+            'extras' => $service->updateDailyOrderExtras(Carbon::parse($unit['date'])),
             'weekly' => $service->updateWeeklySummariesRange(
                 Carbon::parse($unit['start_date']),
                 Carbon::parse($unit['end_date'])
@@ -402,7 +406,7 @@ class RunAggregationRebuildJob implements ShouldQueue
     protected function unitDateForProgress(array $unit): ?string
     {
         return match ($unit['stage']) {
-            'hourly', 'daily' => $unit['date'] ?? null,
+            'hourly', 'daily', 'extras' => $unit['date'] ?? null,
             'weekly' => $unit['start_date'] ?? null,
             'monthly' => isset($unit['year'], $unit['month'])
             ? FiscalCalendar::periodRange($unit['year'], $unit['month'])[0]->toDateString()

@@ -22,6 +22,8 @@ class RebuildAggregationsCommand extends Command
     protected array $validStages = [
         'hourly',
         'daily',
+        // Only daily_order_extras (back-fill without rebuilding daily rows); not part of "all".
+        'extras',
         'weekly',
         'monthly',
         'quarterly',
@@ -31,6 +33,7 @@ class RebuildAggregationsCommand extends Command
     protected array $stageOrder = [
         'hourly' => 1,
         'daily' => 2,
+        'extras' => 2,
         'weekly' => 3,
         'monthly' => 4,
         'quarterly' => 5,
@@ -174,7 +177,8 @@ class RebuildAggregationsCommand extends Command
         }
 
         if ($allowAll && in_array('all', $parts, true)) {
-            return $this->validStages;
+            // The daily stage already builds the extras.
+            return array_values(array_diff($this->validStages, ['extras']));
         }
 
         foreach ($parts as $part) {
