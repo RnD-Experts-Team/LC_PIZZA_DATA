@@ -1455,6 +1455,15 @@ trait BuildsBusinessReports
             $rows = $rows->concat($shape($part)->get());
         }
 
+        // Hand the raw-table connections back now rather than holding them for
+        // the rest of the request: every service shares one MySQL server with
+        // few connections. (A later read reconnects on its own.)
+        foreach ($routed as $queries) {
+            foreach ($queries as $query) {
+                $query->getConnection()->disconnect();
+            }
+        }
+
         return count($routed[$table]) > 1 ? $this->businessSumBy($rows, $keys) : $rows;
     }
 

@@ -34,7 +34,10 @@ class RunAggregationRebuildJob implements ShouldQueue
         protected string $startDate,
         protected string $endDate,
         protected string $type = 'all',
-        protected ?array $stages = null
+        protected ?array $stages = null,
+        // A pause between units so a long rebuild never runs flat out against
+        // the MySQL server every service shares.
+        protected int $pauseMs = 250
     ) {
     }
 
@@ -82,6 +85,10 @@ class RunAggregationRebuildJob implements ShouldQueue
             ]);
 
             foreach ($units as $unit) {
+                if ($processed > 0 && $this->pauseMs > 0) {
+                    usleep($this->pauseMs * 1000);
+                }
+
                 $this->updateProgress('processing', [
                     'total' => count($units),
                     'processed' => $processed,

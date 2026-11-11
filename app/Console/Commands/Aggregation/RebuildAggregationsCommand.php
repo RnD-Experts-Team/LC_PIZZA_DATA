@@ -14,7 +14,8 @@ class RebuildAggregationsCommand extends Command
                             {--end= : End date (Y-m-d)}
                             {--type=all : Shortcut type: hourly, daily, weekly, monthly, quarterly, yearly, all}
                             {--stages= : Comma-separated stages: hourly,daily,weekly,monthly,quarterly,yearly,all}
-                            {--except= : Comma-separated stages to exclude}';
+                            {--except= : Comma-separated stages to exclude}
+                            {--pause-ms=250 : Pause between units (ms), to spare the shared MySQL server}';
 
     protected $description = 'Queue a background aggregation rebuild';
 
@@ -108,7 +109,8 @@ class RebuildAggregationsCommand extends Command
             startDate: $start->toDateString(),
             endDate: $end->toDateString(),
             type: (string) ($this->option('type') ?? 'all'),
-            stages: $stages
+            stages: $stages,
+            pauseMs: max(0, (int) $this->option('pause-ms'))
         );
 
         $this->newLine();
