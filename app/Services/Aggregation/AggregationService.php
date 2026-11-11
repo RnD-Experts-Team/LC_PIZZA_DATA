@@ -15,7 +15,9 @@ use App\Models\Aggregation\QuarterlyItemSummary;
 use App\Models\Aggregation\YearlyStoreSummary;
 use App\Models\Aggregation\YearlyItemSummary;
 use App\Services\Database\DatabaseRouter;
+use App\Support\FiscalCalendar;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -384,47 +386,34 @@ class AggregationService
         );
     }
 
-    /**
-     * Update weekly summaries from DAILY data
-     */
+    /** The Tue–Mon business week of $date, rebuilt from daily. */
     public function updateWeeklySummaries(Carbon $date): array
     {
-        $weekStart = $date->copy()->startOfWeek(Carbon::TUESDAY);
-        $weekEnd = $date->copy()->endOfWeek(Carbon::MONDAY);
+        [$start, $end] = FiscalCalendar::weekRange($date);
 
-        return $this->updateWeeklySummariesRange($weekStart, $weekEnd);
+        return $this->updateWeeklySummariesRange($start->toMutable(), $end->toMutable());
     }
 
-    /**
-     * Update monthly summaries from WEEKLY data
-     */
+    /** The fiscal 4-week period of $date (the "monthly" tables), rebuilt from daily. */
     public function updateMonthlySummaries(Carbon $date): array
     {
-        $year = $date->year;
-        $month = $date->month;
+        $at = FiscalCalendar::of($date);
 
-        return $this->updateMonthlySummariesYearMonth($year, $month);
+        return $this->updateMonthlySummariesYearMonth($at['year'], $at['period']);
     }
 
-    /**
-     * Update quarterly summaries from MONTHLY data
-     */
+    /** The fiscal quarter (3-3-3-4 periods) of $date, rebuilt from daily. */
     public function updateQuarterlySummaries(Carbon $date): array
     {
-        $year = $date->year;
-        $quarter = (int) ceil($date->month / 3);
+        $at = FiscalCalendar::of($date);
 
-        return $this->updateQuarterlySummariesYearQuarter($year, $quarter);
+        return $this->updateQuarterlySummariesYearQuarter($at['year'], $at['quarter']);
     }
 
-    /**
-     * Update yearly summaries from QUARTERLY data
-     */
+    /** The fiscal year of $date, rebuilt from daily. */
     public function updateYearlySummaries(Carbon $date): array
     {
-        $year = $date->year;
-
-        return $this->updateYearlySummariesYear($year);
+        return $this->updateYearlySummariesYear(FiscalCalendar::yearOf($date));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1040,661 +1029,236 @@ class AggregationService
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // WEEKLY AGGREGATION FROM DAILY
+    // WEEKS, PERIODS, QUARTERS AND YEARS — ALL FROM DAILY
+    //
+    // Daily is the source of truth. Weeks (Tue–Mon) are summed from daily
+    // rows. Periods, quarters and years on the fiscal calendar
+    // (App\Support\FiscalCalendar) are whole weeks, so they are summed from
+    // the weekly rows — exactly the sum of their days, without re-reading
+    // every day. The "monthly" tables hold fiscal periods (month_num = period
+    // 1–13, year_num = fiscal year). Build weeks before what sits on them.
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /** Every business week touching $start..$end. */
     public function updateWeeklySummariesRange(Carbon $start, Carbon $end): array
     {
-        $sourceRows = DailyStoreSummary::whereBetween('business_date', [
-            $start->toDateString(),
-            $end->toDateString(),
-        ])->count();
-
-        if ($sourceRows === 0) {
-            Log::info('Weekly stage skipped: no daily rows', [
-                'start_date' => $start->toDateString(),
-                'end_date' => $end->toDateString(),
-            ]);
-
-            return $this->emptyStageResult('weekly', 'No daily summary rows in requested range.');
-        }
-
-        $weeks = DailyStoreSummary::whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
-            ->selectRaw('DISTINCT franchise_store, YEAR(business_date) as y, WEEK(business_date, 3) as w')
-            ->get();
-
-        $storesFound = $weeks->count();
-        $rowsWritten = 0;
-        $failedStores = 0;
-
-        foreach ($weeks as $week) {
-            try {
-                $rowsWritten += $this->aggregateWeeklyStore((string) $week->franchise_store, (int) $week->y, (int) $week->w);
-                $rowsWritten += $this->aggregateWeeklyItems((string) $week->franchise_store, (int) $week->y, (int) $week->w);
-            } catch (\Throwable $e) {
-                $failedStores++;
-
-                Log::error('Weekly aggregation failed for store/week', [
-                    'store' => (string) $week->franchise_store,
-                    'year' => (int) $week->y,
-                    'week' => (int) $week->w,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        $status = $failedStores > 0
-            ? 'failed'
-            : ($rowsWritten > 0 ? 'success' : 'failed');
-
-        return $this->stageResult(
-            stage: 'weekly',
-            status: $status,
-            sourceRows: $sourceRows,
-            rowsWritten: $rowsWritten,
-            storesFound: $storesFound,
-            storesFailed: $failedStores,
-            message: $status === 'success'
-            ? 'Weekly stage completed.'
-            : 'Weekly stage completed with failures or zero writes despite daily source rows.',
-            extra: [
-                'start_date' => $start->toDateString(),
-                'end_date' => $end->toDateString(),
-            ]
-        );
-    }
-
-    private function aggregateWeeklyStore(string $store, int $year, int $week): int
-    {
-        $weekStart = Carbon::now()->setISODate($year, $week)->startOfWeek(Carbon::TUESDAY);
-        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::MONDAY);
-
-        $daily = DailyStoreSummary::where('franchise_store', $store)
-            ->whereBetween('business_date', [$weekStart->toDateString(), $weekEnd->toDateString()])
-            ->get();
-
-        if ($daily->isEmpty()) {
-            return 0;
-        }
-
-        $summary = $this->sumStorePeriod($daily, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'week_num' => $week,
-            'week_start_date' => $weekStart->toDateString(),
-            'week_end_date' => $weekEnd->toDateString(),
-        ]);
-
-        $daysCount = $daily->count();
-        $summary['avg_daily_sales'] = $daysCount > 0 ? round($summary['royalty_obligation'] / $daysCount, 2) : 0;
-        $summary['avg_daily_orders'] = $daysCount > 0 ? round($summary['total_orders'] / $daysCount, 2) : 0;
-
-        $priorWeek = WeeklyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $week == 1 ? $year - 1 : $year)
-            ->where('week_num', $week == 1 ? 52 : $week - 1)
-            ->first();
-
-        if ($priorWeek) {
-            $priorSales = (float) ($priorWeek->royalty_obligation ?? 0);
-            $summary['sales_vs_prior_week'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['sales_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $priorYear = WeeklyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year - 1)
-            ->where('week_num', $week)
-            ->first();
-
-        if ($priorYear) {
-            $priorSales = (float) ($priorYear->royalty_obligation ?? 0);
-            $summary['sales_vs_same_week_prior_year'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['yoy_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $this->replaceRow(WeeklyStoreSummary::class, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'week_num' => $week,
-        ], $summary);
-
-        return 1;
-    }
-
-    private function aggregateWeeklyItems(string $store, int $year, int $week): int
-    {
-        $weekStart = Carbon::now()->setISODate($year, $week)->startOfWeek(Carbon::TUESDAY);
-        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::MONDAY);
-
-        $items = DailyItemSummary::where('franchise_store', $store)
-            ->whereBetween('business_date', [$weekStart->toDateString(), $weekEnd->toDateString()])
-            ->selectRaw('
-                item_id,
-                menu_item_name,
-                menu_item_account,
-                SUM(quantity_sold) as quantity_sold,
-                SUM(gross_sales) as gross_sales,
-                SUM(net_sales) as net_sales,
-                AVG(avg_item_price) as avg_item_price,
-                AVG(quantity_sold) as avg_daily_quantity,
-                SUM(delivery_quantity) as delivery_quantity,
-                SUM(carryout_quantity) as carryout_quantity
-            ')
-            ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
-            ->get();
-
-        $rows = [];
-
-        foreach ($items as $item) {
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $item->item_id] = [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'week_num' => $week,
-                'item_id' => $item->item_id,
-                'menu_item_name' => $item->menu_item_name,
-                'menu_item_account' => $item->menu_item_account,
-                'quantity_sold' => $item->quantity_sold,
-                'gross_sales' => round($item->gross_sales, 2),
-                'net_sales' => round($item->net_sales, 2),
-                'avg_item_price' => round($item->avg_item_price, 2),
-                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                'delivery_quantity' => $item->delivery_quantity,
-                'carryout_quantity' => $item->carryout_quantity,
-                'week_start_date' => $weekStart->toDateString(),
-                'week_end_date' => $weekEnd->toDateString(),
+        $buckets = [];
+        for ($week = FiscalCalendar::weekStart($start); $week->lte($end); $week = $week->addWeek()) {
+            $at = FiscalCalendar::of($week);
+            $prior = FiscalCalendar::of($week->subWeek());
+            $weekEnd = $week->addDays(6);
+            $dates = ['week_start_date' => $week->toDateString(), 'week_end_date' => $weekEnd->toDateString()];
+            $buckets[] = [
+                'from' => $week,
+                'to' => $weekEnd,
+                'model' => WeeklyStoreSummary::class,
+                'itemModel' => WeeklyItemSummary::class,
+                'key' => ['year_num' => $at['year'], 'week_num' => $at['week']],
+                'source' => 'daily',
+                'storeExtra' => fn (int $days): array => $dates,
+                'itemExtra' => $dates,
+                'perDay' => true,
+                'prior' => [['year_num' => $prior['year'], 'week_num' => $prior['week']], 'sales_vs_prior_week', 'sales_growth_percent'],
+                'priorYear' => [['year_num' => $at['year'] - 1, 'week_num' => $at['week']], 'sales_vs_same_week_prior_year', 'yoy_growth_percent'],
             ];
         }
 
-        $this->writeItemRows(WeeklyItemSummary::class, array_values($rows), ['franchise_store', 'year_num', 'week_num', 'item_id']);
-
-        return $items->count();
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MONTHLY AGGREGATION FROM WEEKLY
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    public function updateMonthlySummariesYearMonth(int $year, int $month): array
-    {
-        $monthStart = Carbon::create($year, $month, 1);
-        $monthEnd = $monthStart->copy()->endOfMonth();
-
-        $sourceRows = WeeklyStoreSummary::where('year_num', $year)
-            ->where(function ($q) use ($monthStart, $monthEnd) {
-                $q->whereBetween('week_start_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
-                    ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
-            })
-            ->count();
-
-        if ($sourceRows === 0) {
-            Log::info('Monthly stage skipped: no weekly rows', [
-                'year' => $year,
-                'month' => $month,
-            ]);
-
-            return $this->emptyStageResult('monthly', 'No weekly summary rows for requested month.');
-        }
-
-        $stores = WeeklyStoreSummary::where('year_num', $year)
-            ->where(function ($q) use ($monthStart, $monthEnd) {
-                $q->whereBetween('week_start_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
-                    ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
-            })
-            ->distinct()
-            ->pluck('franchise_store')
-            ->filter(fn($store) => $store !== null && $store !== '')
-            ->values();
-
-        $storesFound = $stores->count();
-        $rowsWritten = 0;
-        $failedStores = 0;
-
-        foreach ($stores as $store) {
-            try {
-                $rowsWritten += $this->aggregateMonthlyStore((string) $store, $year, $month);
-                $rowsWritten += $this->aggregateMonthlyItems((string) $store, $year, $month);
-            } catch (\Throwable $e) {
-                $failedStores++;
-
-                Log::error('Monthly aggregation failed for store/month', [
-                    'store' => (string) $store,
-                    'year' => $year,
-                    'month' => $month,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        $status = $failedStores > 0
-            ? 'failed'
-            : ($rowsWritten > 0 ? 'success' : 'failed');
-
-        return $this->stageResult(
-            stage: 'monthly',
-            status: $status,
-            sourceRows: $sourceRows,
-            rowsWritten: $rowsWritten,
-            storesFound: $storesFound,
-            storesFailed: $failedStores,
-            message: $status === 'success'
-            ? 'Monthly stage completed.'
-            : 'Monthly stage completed with failures or zero writes despite weekly source rows.',
-            extra: [
-                'year' => $year,
-                'month' => $month,
-            ]
-        );
-    }
-
-    private function aggregateMonthlyStore(string $store, int $year, int $month): int
-    {
-        $monthStart = Carbon::create($year, $month, 1);
-        $monthEnd = $monthStart->copy()->endOfMonth();
-
-        $weekly = WeeklyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
-            ->where(function ($q) use ($monthStart, $monthEnd) {
-                $q->whereBetween('week_start_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
-                    ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
-            })
-            ->get();
-
-        if ($weekly->isEmpty()) {
-            return 0;
-        }
-
-        $operationalDays = DailyStoreSummary::where('franchise_store', $store)
-            ->whereYear('business_date', $year)
-            ->whereMonth('business_date', $month)
-            ->count();
-
-        $summary = $this->sumStorePeriod($weekly, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'month_num' => $month,
-            'month_name' => $monthStart->format('F'),
-            'operational_days' => $operationalDays,
+        return $this->rebuildBuckets('weekly', $buckets, [
+            'start_date' => $start->toDateString(),
+            'end_date' => $end->toDateString(),
         ]);
-
-        $priorMonth = MonthlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $month == 1 ? $year - 1 : $year)
-            ->where('month_num', $month == 1 ? 12 : $month - 1)
-            ->first();
-
-        if ($priorMonth) {
-            $priorSales = (float) ($priorMonth->royalty_obligation ?? 0);
-            $summary['sales_vs_prior_month'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['sales_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $priorYear = MonthlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year - 1)
-            ->where('month_num', $month)
-            ->first();
-
-        if ($priorYear) {
-            $priorSales = (float) ($priorYear->royalty_obligation ?? 0);
-            $summary['sales_vs_same_month_prior_year'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['yoy_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $this->replaceRow(MonthlyStoreSummary::class, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'month_num' => $month,
-        ], $summary);
-
-        return 1;
     }
 
-    private function aggregateMonthlyItems(string $store, int $year, int $month): int
+    /** One fiscal period, kept in the "monthly" tables (month_num = period 1–13). */
+    public function updateMonthlySummariesYearMonth(int $year, int $period): array
     {
-        $monthStart = Carbon::create($year, $month, 1);
-        $monthEnd = $monthStart->copy()->endOfMonth();
+        [$from, $to] = FiscalCalendar::periodRange($year, $period);
+        $prior = $period === 1 ? ['year_num' => $year - 1, 'month_num' => FiscalCalendar::PERIODS] : ['year_num' => $year, 'month_num' => $period - 1];
 
-        $items = WeeklyItemSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
-            ->where(function ($q) use ($monthStart, $monthEnd) {
-                $q->whereBetween('week_start_date', [$monthStart->toDateString(), $monthEnd->toDateString()])
-                    ->orWhereBetween('week_end_date', [$monthStart->toDateString(), $monthEnd->toDateString()]);
-            })
-            ->selectRaw('
-                item_id,
-                menu_item_name,
-                menu_item_account,
-                SUM(quantity_sold) as quantity_sold,
-                SUM(gross_sales) as gross_sales,
-                SUM(net_sales) as net_sales,
-                AVG(avg_item_price) as avg_item_price,
-                AVG(avg_daily_quantity) as avg_daily_quantity,
-                SUM(delivery_quantity) as delivery_quantity,
-                SUM(carryout_quantity) as carryout_quantity
-            ')
-            ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
-            ->get();
-
-        $rows = [];
-
-        foreach ($items as $item) {
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $item->item_id] = [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'month_num' => $month,
-                'item_id' => $item->item_id,
-                'menu_item_name' => $item->menu_item_name,
-                'menu_item_account' => $item->menu_item_account,
-                'quantity_sold' => $item->quantity_sold,
-                'gross_sales' => round($item->gross_sales, 2),
-                'net_sales' => round($item->net_sales, 2),
-                'avg_item_price' => round($item->avg_item_price, 2),
-                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                'delivery_quantity' => $item->delivery_quantity,
-                'carryout_quantity' => $item->carryout_quantity,
-            ];
-        }
-
-        $this->writeItemRows(MonthlyItemSummary::class, array_values($rows), ['franchise_store', 'year_num', 'month_num', 'item_id']);
-
-        return $items->count();
+        return $this->rebuildBuckets('monthly', [[
+            'from' => $from,
+            'to' => $to,
+            'model' => MonthlyStoreSummary::class,
+            'itemModel' => MonthlyItemSummary::class,
+            'key' => ['year_num' => $year, 'month_num' => $period],
+            'source' => 'weekly',
+            'storeExtra' => fn (int $days): array => [
+                'month_name' => "Period {$period}",
+                'operational_days' => $days,
+            ],
+            'itemExtra' => [],
+            'perDay' => false,
+            'prior' => [$prior, 'sales_vs_prior_month', 'sales_growth_percent'],
+            'priorYear' => [['year_num' => $year - 1, 'month_num' => $period], 'sales_vs_same_month_prior_year', 'yoy_growth_percent'],
+        ]], ['year' => $year, 'month' => $period]);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // QUARTERLY AGGREGATION FROM MONTHLY
-    // ═══════════════════════════════════════════════════════════════════════════
 
     public function updateQuarterlySummariesYearQuarter(int $year, int $quarter): array
     {
-        $m1 = ($quarter - 1) * 3 + 1;
-        $m3 = $quarter * 3;
+        [$from, $to] = FiscalCalendar::quarterRange($year, $quarter);
+        $prior = $quarter === 1 ? ['year_num' => $year - 1, 'quarter_num' => 4] : ['year_num' => $year, 'quarter_num' => $quarter - 1];
 
-        $sourceRows = MonthlyStoreSummary::where('year_num', $year)
-            ->whereBetween('month_num', [$m1, $m3])
-            ->count();
-
-        if ($sourceRows === 0) {
-            Log::info('Quarterly stage skipped: no monthly rows', [
-                'year' => $year,
-                'quarter' => $quarter,
-            ]);
-
-            return $this->emptyStageResult('quarterly', 'No monthly summary rows for requested quarter.');
-        }
-
-        $stores = MonthlyStoreSummary::where('year_num', $year)
-            ->whereBetween('month_num', [$m1, $m3])
-            ->distinct()
-            ->pluck('franchise_store')
-            ->filter(fn($store) => $store !== null && $store !== '')
-            ->values();
-
-        $storesFound = $stores->count();
-        $rowsWritten = 0;
-        $failedStores = 0;
-
-        foreach ($stores as $store) {
-            try {
-                $rowsWritten += $this->aggregateQuarterlyStore((string) $store, $year, $quarter);
-                $rowsWritten += $this->aggregateQuarterlyItems((string) $store, $year, $quarter);
-            } catch (\Throwable $e) {
-                $failedStores++;
-
-                Log::error('Quarterly aggregation failed for store/quarter', [
-                    'store' => (string) $store,
-                    'year' => $year,
-                    'quarter' => $quarter,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        $status = $failedStores > 0
-            ? 'failed'
-            : ($rowsWritten > 0 ? 'success' : 'failed');
-
-        return $this->stageResult(
-            stage: 'quarterly',
-            status: $status,
-            sourceRows: $sourceRows,
-            rowsWritten: $rowsWritten,
-            storesFound: $storesFound,
-            storesFailed: $failedStores,
-            message: $status === 'success'
-            ? 'Quarterly stage completed.'
-            : 'Quarterly stage completed with failures or zero writes despite monthly source rows.',
-            extra: [
-                'year' => $year,
-                'quarter' => $quarter,
-            ]
-        );
+        return $this->rebuildBuckets('quarterly', [[
+            'from' => $from,
+            'to' => $to,
+            'model' => QuarterlyStoreSummary::class,
+            'itemModel' => QuarterlyItemSummary::class,
+            'key' => ['year_num' => $year, 'quarter_num' => $quarter],
+            'source' => 'weekly',
+            'storeExtra' => fn (int $days, int $periods): array => [
+                'quarter_start_date' => $from->toDateString(),
+                'quarter_end_date' => $to->toDateString(),
+                'operational_days' => $days,
+                'operational_months' => $periods,
+            ],
+            'itemExtra' => [],
+            'perDay' => false,
+            'prior' => [$prior, 'sales_vs_prior_quarter', 'sales_growth_percent'],
+            'priorYear' => [['year_num' => $year - 1, 'quarter_num' => $quarter], 'sales_vs_same_quarter_prior_year', 'yoy_growth_percent'],
+        ]], ['year' => $year, 'quarter' => $quarter]);
     }
-
-    private function aggregateQuarterlyStore(string $store, int $year, int $quarter): int
-    {
-        $m1 = ($quarter - 1) * 3 + 1;
-        $m3 = $quarter * 3;
-
-        $monthly = MonthlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
-            ->whereBetween('month_num', [$m1, $m3])
-            ->get();
-
-        if ($monthly->isEmpty()) {
-            return 0;
-        }
-
-        $qStart = Carbon::create($year, $m1, 1);
-        $qEnd = Carbon::create($year, $m3, 1)->endOfMonth();
-
-        $summary = $this->sumStorePeriod($monthly, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'quarter_num' => $quarter,
-            'quarter_start_date' => $qStart->toDateString(),
-            'quarter_end_date' => $qEnd->toDateString(),
-            'operational_days' => $monthly->sum('operational_days'),
-            'operational_months' => $monthly->count(),
-        ]);
-
-        $priorQuarter = QuarterlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $quarter == 1 ? $year - 1 : $year)
-            ->where('quarter_num', $quarter == 1 ? 4 : $quarter - 1)
-            ->first();
-
-        if ($priorQuarter) {
-            $priorSales = (float) ($priorQuarter->royalty_obligation ?? 0);
-            $summary['sales_vs_prior_quarter'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['sales_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $priorYear = QuarterlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year - 1)
-            ->where('quarter_num', $quarter)
-            ->first();
-
-        if ($priorYear) {
-            $priorSales = (float) ($priorYear->royalty_obligation ?? 0);
-            $summary['sales_vs_same_quarter_prior_year'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['yoy_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
-        }
-
-        $this->replaceRow(QuarterlyStoreSummary::class, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'quarter_num' => $quarter,
-        ], $summary);
-
-        return 1;
-    }
-
-    private function aggregateQuarterlyItems(string $store, int $year, int $quarter): int
-    {
-        $m1 = ($quarter - 1) * 3 + 1;
-        $m3 = $quarter * 3;
-
-        $qStart = Carbon::create($year, $m1, 1);
-        $qEnd = Carbon::create($year, $m3, 1)->endOfMonth();
-
-        $items = MonthlyItemSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
-            ->whereBetween('month_num', [$m1, $m3])
-            ->selectRaw('
-                item_id,
-                menu_item_name,
-                menu_item_account,
-                SUM(quantity_sold) as quantity_sold,
-                SUM(gross_sales) as gross_sales,
-                SUM(net_sales) as net_sales,
-                AVG(avg_item_price) as avg_item_price,
-                AVG(avg_daily_quantity) as avg_daily_quantity,
-                SUM(delivery_quantity) as delivery_quantity,
-                SUM(carryout_quantity) as carryout_quantity
-            ')
-            ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
-            ->get();
-
-        $rows = [];
-
-        foreach ($items as $item) {
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $item->item_id] = [
-                'franchise_store' => $store,
-                'year_num' => $year,
-                'quarter_num' => $quarter,
-                'item_id' => $item->item_id,
-                'menu_item_name' => $item->menu_item_name,
-                'menu_item_account' => $item->menu_item_account,
-                'quantity_sold' => $item->quantity_sold,
-                'gross_sales' => round($item->gross_sales, 2),
-                'net_sales' => round($item->net_sales, 2),
-                'avg_item_price' => round($item->avg_item_price, 2),
-                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
-                'delivery_quantity' => $item->delivery_quantity,
-                'carryout_quantity' => $item->carryout_quantity,
-                'quarter_start_date' => $qStart->toDateString(),
-                'quarter_end_date' => $qEnd->toDateString(),
-            ];
-        }
-
-        $this->writeItemRows(QuarterlyItemSummary::class, array_values($rows), ['franchise_store', 'year_num', 'quarter_num', 'item_id']);
-
-        return $items->count();
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // YEARLY AGGREGATION FROM QUARTERLY
-    // ═══════════════════════════════════════════════════════════════════════════
 
     public function updateYearlySummariesYear(int $year): array
     {
-        $sourceRows = QuarterlyStoreSummary::where('year_num', $year)->count();
+        [$from, $to] = FiscalCalendar::yearRange($year);
 
-        if ($sourceRows === 0) {
-            Log::info('Yearly stage skipped: no quarterly rows', [
-                'year' => $year,
-            ]);
+        return $this->rebuildBuckets('yearly', [[
+            'from' => $from,
+            'to' => $to,
+            'model' => YearlyStoreSummary::class,
+            'itemModel' => YearlyItemSummary::class,
+            'key' => ['year_num' => $year],
+            'source' => 'weekly',
+            'storeExtra' => fn (int $days, int $periods): array => [
+                'operational_days' => $days,
+                'operational_months' => $periods,
+            ],
+            'itemExtra' => [],
+            'perDay' => false,
+            'prior' => [['year_num' => $year - 1], 'sales_vs_prior_year', 'sales_growth_percent'],
+            'priorYear' => null,
+        ]], ['year' => $year]);
+    }
 
-            return $this->emptyStageResult('yearly', 'No quarterly summary rows for requested year.');
-        }
-
-        $stores = QuarterlyStoreSummary::where('year_num', $year)
-            ->distinct()
-            ->pluck('franchise_store')
-            ->filter(fn($store) => $store !== null && $store !== '')
-            ->values();
-
-        $storesFound = $stores->count();
+    /**
+     * Rebuilds the store and item rows of each bucket from the daily rows of
+     * its days, for every store with daily rows in it.
+     *
+     * @param  list<array<string, mixed>>  $buckets
+     */
+    private function rebuildBuckets(string $stage, array $buckets, array $extra): array
+    {
+        $sourceRows = 0;
         $rowsWritten = 0;
+        $storesFound = 0;
         $failedStores = 0;
 
-        foreach ($stores as $store) {
-            try {
-                $rowsWritten += $this->aggregateYearlyStore((string) $store, $year);
-                $rowsWritten += $this->aggregateYearlyItems((string) $store, $year);
-            } catch (\Throwable $e) {
-                $failedStores++;
+        foreach ($buckets as $bucket) {
+            $days = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
+            // Days and periods with sales per store (index-only counts over daily).
+            $counts = DailyStoreSummary::whereBetween('business_date', $days)
+                ->selectRaw('franchise_store, COUNT(*) as days, COUNT(DISTINCT ' . $this->periodSql($bucket['from']) . ') as periods')
+                ->groupBy('franchise_store')
+                ->get()
+                ->filter(fn ($row) => $row->franchise_store !== null && $row->franchise_store !== '')
+                ->keyBy('franchise_store');
+            $sourceRows += $bucket['source'] === 'daily'
+                ? (int) $counts->sum('days')
+                : WeeklyStoreSummary::whereBetween('week_start_date', $days)->count();
+            $storesFound += $counts->count();
 
-                Log::error('Yearly aggregation failed for store/year', [
-                    'store' => (string) $store,
-                    'year' => $year,
-                    'error' => $e->getMessage(),
-                ]);
+            foreach ($counts as $store => $count) {
+                try {
+                    $rowsWritten += $this->aggregateBucketStore((string) $store, $bucket, (int) $count->days, (int) $count->periods);
+                    $rowsWritten += $this->aggregateBucketItems((string) $store, $bucket);
+                } catch (\Throwable $e) {
+                    $failedStores++;
+
+                    Log::error("{$stage} aggregation failed for store", [
+                        'store' => (string) $store,
+                        'from' => $days[0],
+                        'to' => $days[1],
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 
-        $status = $failedStores > 0
-            ? 'failed'
-            : ($rowsWritten > 0 ? 'success' : 'failed');
+        if ($sourceRows === 0) {
+            return $this->emptyStageResult($stage, "No {$buckets[0]['source']} summary rows in the requested range.");
+        }
+
+        $status = $failedStores > 0 ? 'failed' : ($rowsWritten > 0 ? 'success' : 'failed');
 
         return $this->stageResult(
-            stage: 'yearly',
+            stage: $stage,
             status: $status,
             sourceRows: $sourceRows,
             rowsWritten: $rowsWritten,
             storesFound: $storesFound,
             storesFailed: $failedStores,
             message: $status === 'success'
-            ? 'Yearly stage completed.'
-            : 'Yearly stage completed with failures or zero writes despite quarterly source rows.',
-            extra: [
-                'year' => $year,
-            ]
+                ? ucfirst($stage) . ' stage completed.'
+                : ucfirst($stage) . ' stage completed with failures or zero writes despite source rows.',
+            extra: $extra,
         );
     }
 
-    private function aggregateYearlyStore(string $store, int $year): int
+    /**
+     * One store's row for a bucket — a week summed from its daily rows, a
+     * period/quarter/year from its weekly rows — plus the prior-bucket
+     * comparisons.
+     */
+    private function aggregateBucketStore(string $store, array $bucket, int $days, int $periods): int
     {
-        $quarterly = QuarterlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
-            ->get();
+        $range = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
+        $rows = $bucket['source'] === 'daily'
+            ? DailyStoreSummary::where('franchise_store', $store)->whereBetween('business_date', $range)->get()
+            : WeeklyStoreSummary::where('franchise_store', $store)->whereBetween('week_start_date', $range)->get();
 
-        if ($quarterly->isEmpty()) {
+        if ($rows->isEmpty()) {
             return 0;
         }
 
-        $summary = $this->sumStorePeriod($quarterly, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-            'operational_days' => $quarterly->sum('operational_days'),
-            'operational_months' => $quarterly->sum('operational_months'),
-        ]);
+        $key = ['franchise_store' => $store] + $bucket['key'];
+        $summary = $this->sumStorePeriod($rows, $key + ($bucket['storeExtra'])($days, $periods));
 
-        $priorYear = YearlyStoreSummary::where('franchise_store', $store)
-            ->where('year_num', $year - 1)
-            ->first();
-
-        if ($priorYear) {
-            $priorSales = (float) ($priorYear->royalty_obligation ?? 0);
-            $summary['sales_vs_prior_year'] = round($summary['royalty_obligation'] - $priorSales, 2);
-            $summary['sales_growth_percent'] = $priorSales > 0
-                ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                : 0;
+        if ($bucket['perDay'] && $days > 0) {
+            $summary['avg_daily_sales'] = round($summary['royalty_obligation'] / $days, 2);
+            $summary['avg_daily_orders'] = round($summary['total_orders'] / $days, 2);
         }
 
-        $this->replaceRow(YearlyStoreSummary::class, [
-            'franchise_store' => $store,
-            'year_num' => $year,
-        ], $summary);
+        foreach (array_filter([$bucket['prior'], $bucket['priorYear']]) as [$priorKey, $diffField, $growthField]) {
+            $prior = ($bucket['model'])::where(['franchise_store' => $store] + $priorKey)->first();
+            if ($prior) {
+                $priorSales = (float) ($prior->royalty_obligation ?? 0);
+                $summary[$diffField] = round($summary['royalty_obligation'] - $priorSales, 2);
+                $summary[$growthField] = $priorSales > 0
+                    ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
+                    : 0;
+            }
+        }
+
+        $this->replaceRow($bucket['model'], $key, $summary);
 
         return 1;
     }
 
-    private function aggregateYearlyItems(string $store, int $year): int
+    /**
+     * One store's item rows for a bucket — a week from daily items, the rest
+     * from weekly items. Price = gross ÷ quantity and quantity per day sold =
+     * quantity ÷ days sold, never an average of averages.
+     */
+    private function aggregateBucketItems(string $store, array $bucket): int
     {
-        $items = QuarterlyItemSummary::where('franchise_store', $store)
-            ->where('year_num', $year)
+        $range = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
+        $query = $bucket['source'] === 'daily'
+            ? DailyItemSummary::where('franchise_store', $store)->whereBetween('business_date', $range)
+                ->selectRaw('COUNT(*) as days_sold')
+            : WeeklyItemSummary::where('franchise_store', $store)->whereBetween('week_start_date', $range)
+                // A week's days sold = its quantity ÷ its quantity per day sold.
+                ->selectRaw('COALESCE(SUM(quantity_sold / NULLIF(avg_daily_quantity, 0)), 0) as days_sold');
+        $items = $query
             ->selectRaw('
                 item_id,
                 menu_item_name,
@@ -1702,8 +1266,6 @@ class AggregationService
                 SUM(quantity_sold) as quantity_sold,
                 SUM(gross_sales) as gross_sales,
                 SUM(net_sales) as net_sales,
-                AVG(avg_item_price) as avg_item_price,
-                AVG(avg_daily_quantity) as avg_daily_quantity,
                 SUM(delivery_quantity) as delivery_quantity,
                 SUM(carryout_quantity) as carryout_quantity
             ')
@@ -1711,28 +1273,37 @@ class AggregationService
             ->get();
 
         $rows = [];
-
         foreach ($items as $item) {
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $item->item_id] = [
-                'franchise_store' => $store,
-                'year_num' => $year,
+            $quantity = (float) $item->quantity_sold;
+            // A later group for the same item_id overwrites an earlier one (one row per item).
+            $rows[(string) $item->item_id] = ['franchise_store' => $store] + $bucket['key'] + [
                 'item_id' => $item->item_id,
                 'menu_item_name' => $item->menu_item_name,
                 'menu_item_account' => $item->menu_item_account,
                 'quantity_sold' => $item->quantity_sold,
-                'gross_sales' => round($item->gross_sales, 2),
-                'net_sales' => round($item->net_sales, 2),
-                'avg_item_price' => round($item->avg_item_price, 2),
-                'avg_daily_quantity' => round($item->avg_daily_quantity, 2),
+                'gross_sales' => round((float) $item->gross_sales, 2),
+                'net_sales' => round((float) $item->net_sales, 2),
+                'avg_item_price' => $quantity > 0 ? round((float) $item->gross_sales / $quantity, 2) : 0,
+                'avg_daily_quantity' => (float) $item->days_sold > 0 ? round($quantity / (float) $item->days_sold, 2) : 0,
                 'delivery_quantity' => $item->delivery_quantity,
                 'carryout_quantity' => $item->carryout_quantity,
-            ];
+            ] + $bucket['itemExtra'];
         }
 
-        $this->writeItemRows(YearlyItemSummary::class, array_values($rows), ['franchise_store', 'year_num', 'item_id']);
+        $this->writeItemRows($bucket['itemModel'], array_values($rows), ['franchise_store', ...array_keys($bucket['key']), 'item_id']);
 
         return $items->count();
+    }
+
+    /**
+     * SQL: the fiscal period index of business_date, counted from $from (a
+     * period start) — 4-week blocks, so COUNT(DISTINCT …) = periods with sales.
+     */
+    private function periodSql(CarbonImmutable $from): string
+    {
+        $days = FiscalCalendar::PERIOD_WEEKS * 7;
+
+        return "FLOOR(DATEDIFF(business_date, '{$from->toDateString()}') / {$days})";
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
