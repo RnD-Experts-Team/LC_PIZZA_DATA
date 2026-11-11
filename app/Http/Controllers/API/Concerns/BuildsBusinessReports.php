@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\API\Concerns;
 
 use App\Models\Aggregation\DailyItemSummary;
+use App\Models\Aggregation\DailyOrderExtras;
 use App\Models\Aggregation\DailyStoreSummary;
 use App\Models\Aggregation\HourlyStoreSummary;
 use App\Models\CleaningReview;
@@ -17,6 +18,7 @@ use App\Models\NonNegotiableReport;
 use App\Models\TransferInOut;
 use App\Services\Analytics\EmployeeReportService;
 use App\Services\Database\DatabaseRouter;
+use App\Support\OrderBuckets;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Query\Builder;
@@ -890,42 +892,36 @@ trait BuildsBusinessReports
     }
 
     // ---------------------------------------------------------------------
-    // Section: orders (raw order tables: channel split, special-items HnR,
-    // upselling, promos). The heaviest scans, kept apart so they never hold
-    // the other sections back.
+    // Section: orders (channel split, special-items HnR and upselling from the
+    // daily order extras; promos from the raw order lines). Kept apart so
+    // they never hold the other sections back.
     // ---------------------------------------------------------------------
 
-    /** Channel customers and the website/mobile in-store vs delivery split (customerCountsForRange + websiteAndMobileSplitForRange in one scan). */
+    /** The stores' daily_order_extras rows in the range, as a query to sum. */
+    private function businessExtras(array $stores, CarbonImmutable $start, CarbonImmutable $end): Builder
+    {
+        return DailyOrderExtras::query()->toBase()
+            ->whereIn('franchise_store', $stores)
+            ->whereBetween('business_date', [$start->toDateString(), $end->toDateString()]);
+    }
+
+    /**
+     * Channel customers and the website/mobile in-store vs delivery split, from
+     * the daily order extras (built once per store-day by the daily aggregation).
+     */
     private function businessChannelSplit(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $inStore = "('Register','Drive-Thru','In Store Only')";
-        $rows = $this->businessGrouped('detail_orders', $stores, $start, $end, ['franchise_store'], fn (callable $part): Builder => $part('d')
-            ->selectRaw("
-                franchise_store,
-                COALESCE(SUM(customer_count), 0) as customers_total,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Phone' THEN customer_count END), 0) as customers_phone,
-                COALESCE(SUM(CASE WHEN order_placed_method IN ('SoundHoundAgent', 'CallCenterAgent') THEN customer_count END), 0) as customers_call_center,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Drive Thru' THEN customer_count END), 0) as customers_drive_thru,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'DoorDash' THEN customer_count END), 0) as customers_doordash,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'UberEats' THEN customer_count END), 0) as customers_ubereats,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Grubhub' THEN customer_count END), 0) as customers_grubhub,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN {$inStore} THEN royalty_obligation END), 0) as website_in_store,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation END), 0) as website_delivery,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method IN {$inStore} THEN royalty_obligation END), 0) as mobile_in_store,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation END), 0) as mobile_delivery,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN {$inStore} THEN customer_count END), 0) as website_in_store_customers,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN customer_count END), 0) as website_delivery_customers,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method IN {$inStore} THEN customer_count END), 0) as mobile_in_store_customers,
-                COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method = 'Delivery' THEN customer_count END), 0) as mobile_delivery_customers
-            ")
-            ->groupBy('franchise_store'));
-
         $keys = [
             'customers_total', 'customers_phone', 'customers_call_center', 'customers_drive_thru',
             'customers_doordash', 'customers_ubereats', 'customers_grubhub',
             'website_in_store', 'website_delivery', 'mobile_in_store', 'mobile_delivery',
             'website_in_store_customers', 'website_delivery_customers', 'mobile_in_store_customers', 'mobile_delivery_customers',
         ];
+        $rows = $this->businessExtras($stores, $start, $end)
+            ->selectRaw('franchise_store, ' . implode(', ', array_map(fn (string $k): string => "COALESCE(SUM({$k}), 0) as {$k}", $keys)))
+            ->groupBy('franchise_store')
+            ->get();
+
         $totals = array_fill_keys($keys, 0.0);
         $byStore = [];
         foreach ($rows as $row) {
@@ -942,31 +938,19 @@ trait BuildsBusinessReports
         ];
     }
 
-    /** Important-items HnR (computeImportantItemsHnrDailyRowsForRange), per store and business week. */
+    /** HnR on orders with a special item, per store and week, from the daily order extras. */
     private function businessImportantItemsHnr(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $week = $this->businessWeekSql('d.business_date');
-        $rows = $this->businessGrouped('detail_orders', $stores, $start, $end, ['franchise_store', 'week_start'], fn (callable $part): Builder => $part('d')
-            ->where('d.hnrOrder', 'Yes')
-            ->joinSub(
-                $part('ol', 'order_line')
-                    ->whereIn('item_id', self::IMPORTANT_ITEMS_HNR_ITEM_IDS)
-                    ->whereNotNull('order_id')
-                    ->select('franchise_store', 'business_date', 'order_id')
-                    ->distinct(),
-                'io',
-                function ($join) {
-                    $join->on('io.franchise_store', '=', 'd.franchise_store')
-                        ->on('io.business_date', '=', 'd.business_date')
-                        ->on('io.order_id', '=', 'd.order_id');
-                },
-            )
+        $week = $this->businessWeekSql('business_date');
+        $rows = $this->businessExtras($stores, $start, $end)
             ->selectRaw(
-                "d.franchise_store as franchise_store, {$week} as week_start, COUNT(*) as hnr_transactions,"
-                . " SUM(CASE WHEN d.broken_promise = 'Yes' THEN 1 ELSE 0 END) as hnr_broken_promises"
+                "franchise_store, {$week} as week_start,"
+                . ' COALESCE(SUM(special_hnr_transactions), 0) as hnr_transactions,'
+                . ' COALESCE(SUM(special_hnr_broken_promises), 0) as hnr_broken_promises'
             )
-            ->groupBy('d.franchise_store')
-            ->groupByRaw($week));
+            ->groupBy('franchise_store')
+            ->groupByRaw($week)
+            ->get();
 
         $totals = [];
         $byStore = [];
@@ -991,57 +975,31 @@ trait BuildsBusinessReports
     }
 
     /**
-     * Upselling (soldWithPizzaUnitsForRange + upsellingItemsForRange) for every
-     * store in three grouped scans. A line counts as "sold with pizza" when its
-     * order — same store, day and order id — has a pizza line.
+     * Upselling (in-store units sold with a pizza, pizza units and EMB units)
+     * per store, from the daily order extras.
      */
     private function businessUpselling(array $stores, CarbonImmutable $start, CarbonImmutable $end): array
     {
-        $grouped = fn (array $keys, callable $shape): Collection => $this->businessGrouped('order_line', $stores, $start, $end, $keys, $shape);
-        $base = fn (callable $part, string $alias): Builder => $this->applyInStoreBucketFilters($part($alias));
-
-        $soldWith = $grouped(['franchise_store'], fn (callable $part): Builder => $base($part, 'ol')
-            ->whereNotNull('ol.order_id')
-            ->joinSub($base($part, 'po')
-                ->whereNotNull('order_id')
-                ->where('is_pizza', 1)
-                ->select('franchise_store', 'business_date', 'order_id')
-                ->distinct(), 'p', function ($join) {
-                $join->on('p.franchise_store', '=', 'ol.franchise_store')
-                    ->on('p.business_date', '=', 'ol.business_date')
-                    ->on('p.order_id', '=', 'ol.order_id');
-            })
-            ->selectRaw("
-                ol.franchise_store as franchise_store,
-                SUM(CASE WHEN ol.item_id = '103001' THEN COALESCE(ol.quantity, 0) ELSE 0 END) as crazy_bread,
-                SUM(CASE WHEN ol.item_id IN ('101288', '101289') THEN COALESCE(ol.quantity, 0) ELSE 0 END) as cookies,
-                SUM(CASE WHEN ol.item_id = '103002' THEN COALESCE(ol.quantity, 0) ELSE 0 END) as sauce,
-                SUM(CASE WHEN ol.is_wings = 1 THEN COALESCE(ol.quantity, 0) ELSE 0 END) as wings,
-                SUM(CASE WHEN ol.is_beverages = 1 THEN COALESCE(ol.quantity, 0) ELSE 0 END) as beverages,
-                SUM(CASE WHEN ol.is_crazy_puffs = 1 THEN COALESCE(ol.quantity, 0) ELSE 0 END) as crazy_puffs,
-                SUM(CASE WHEN ol.item_id = '204100' THEN COALESCE(ol.quantity, 0) ELSE 0 END) as bev_20oz,
-                SUM(CASE WHEN ol.item_id = '204200' THEN COALESCE(ol.quantity, 0) ELSE 0 END) as bev_2l,
-                SUM(CASE WHEN ol.item_id IN ('203003', '103003') THEN COALESCE(ol.quantity, 0) ELSE 0 END) as italian_cheese_bread
-            ")
-            ->groupBy('ol.franchise_store'))
+        $columns = [
+            'crazy_bread' => 'upsell_crazy_bread',
+            'cookies' => 'upsell_cookies',
+            'sauce' => 'upsell_sauce',
+            'wings' => 'upsell_wings',
+            'beverages' => 'upsell_beverages',
+            'crazy_puffs' => 'upsell_crazy_puffs',
+            'bev_20oz' => 'upsell_bev_20oz',
+            'bev_2l' => 'upsell_bev_2l',
+            'italian_cheese_bread' => 'upsell_italian_cheese_bread',
+            'pizza_base' => 'upsell_pizza_base',
+            OrderBuckets::UPSELL_ITEM_NAMES[OrderBuckets::UPSELL_ITEM_IDS[0]] => 'upsell_emb_cheese',
+            OrderBuckets::UPSELL_ITEM_NAMES[OrderBuckets::UPSELL_ITEM_IDS[1]] => 'upsell_emb_pepperoni',
+        ];
+        $rows = $this->businessExtras($stores, $start, $end)
+            ->selectRaw('franchise_store, ' . implode(', ', array_map(fn (string $c): string => "COALESCE(SUM({$c}), 0) as {$c}", $columns)))
+            ->groupBy('franchise_store')
+            ->get()
             ->keyBy(fn ($r): string => (string) $r->franchise_store);
 
-        $pizzaBase = $grouped(['franchise_store'], fn (callable $part): Builder => $base($part, 'pb')
-            ->where('is_pizza', 1)
-            ->selectRaw('franchise_store, COALESCE(SUM(quantity), 0) as units')
-            ->groupBy('franchise_store'))
-            ->pluck('units', 'franchise_store');
-
-        $emb = $grouped(['franchise_store', 'item_id'], fn (callable $part): Builder => $base($part, 'e')
-            ->whereIn('item_id', self::UPSELL_ITEM_IDS)
-            ->selectRaw('franchise_store, item_id, COALESCE(SUM(quantity), 0) as units')
-            ->groupBy('franchise_store', 'item_id'));
-        $embByStore = [];
-        foreach ($emb as $row) {
-            $embByStore[(string) $row->franchise_store][self::UPSELL_ITEM_NAMES[(string) $row->item_id] ?? (string) $row->item_id] = (int) $row->units;
-        }
-
-        $soldKeys = ['crazy_bread', 'cookies', 'sauce', 'wings', 'beverages', 'crazy_puffs', 'bev_20oz', 'bev_2l', 'italian_cheese_bread'];
         $block = function (array $units): array {
             $score = $this->upsellingScoreForItems($units);
 
@@ -1057,13 +1015,8 @@ trait BuildsBusinessReports
         $byStore = [];
         foreach ($stores as $store) {
             $units = [];
-            foreach ($soldKeys as $k) {
-                $units[$k] = (int) ($soldWith[$store]->$k ?? 0);
-            }
-            $units['pizza_base'] = (int) ($pizzaBase[$store] ?? 0);
-            foreach (self::UPSELL_ITEM_IDS as $id) {
-                $name = self::UPSELL_ITEM_NAMES[$id] ?? $id;
-                $units[$name] = (int) ($embByStore[$store][$name] ?? 0);
+            foreach ($columns as $name => $column) {
+                $units[$name] = (int) ($rows[$store]->$column ?? 0);
             }
             if (array_sum($units) === 0) {
                 continue;
@@ -1429,8 +1382,8 @@ trait BuildsBusinessReports
      */
     /**
      * A grouped read of a raw hot/archive table. $shape builds the grouped
-     * query from $part($alias, ?$table): that table's rows for the stores and
-     * dates in ONE part (archive or hot), as a derived table MySQL merges into
+     * query from $part($alias): the table's rows for the stores and dates in
+     * ONE part (archive or hot), as a derived table MySQL merges into
      * the query — so it groups straight on the table and its indexes, never
      * copying every row first as a UNION of both parts would. Each part runs
      * on its own connection; rows with the same $keys from the two parts are
@@ -1438,17 +1391,12 @@ trait BuildsBusinessReports
      */
     private function businessGrouped(string $table, array $stores, CarbonImmutable $start, CarbonImmutable $end, array $keys, callable $shape): Collection
     {
-        $routed = [$table => DatabaseRouter::routedQueries($table, $start->toMutable(), $end->toMutable())];
+        $routed = DatabaseRouter::routedQueries($table, $start->toMutable(), $end->toMutable());
         $rows = collect();
 
-        foreach (array_keys($routed[$table]) as $i) {
-            $part = function (string $alias, ?string $other = null) use (&$routed, $table, $stores, $start, $end, $i): Builder {
-                $name = $other ?? $table;
-                $routed[$name] ??= DatabaseRouter::routedQueries($name, $start->toMutable(), $end->toMutable());
-                if (count($routed[$name]) !== count($routed[$table])) {
-                    throw new \RuntimeException("{$name} and {$table} are not split the same way");
-                }
-                $query = (clone $routed[$name][$i])->whereIn('franchise_store', $stores);
+        foreach ($routed as $routedPart) {
+            $part = function (string $alias) use ($routedPart, $stores): Builder {
+                $query = (clone $routedPart)->whereIn('franchise_store', $stores);
 
                 return $query->getConnection()->query()->fromSub($query, $alias);
             };
@@ -1458,13 +1406,11 @@ trait BuildsBusinessReports
         // Hand the raw-table connections back now rather than holding them for
         // the rest of the request: every service shares one MySQL server with
         // few connections. (A later read reconnects on its own.)
-        foreach ($routed as $queries) {
-            foreach ($queries as $query) {
-                $query->getConnection()->disconnect();
-            }
+        foreach ($routed as $routedPart) {
+            $routedPart->getConnection()->disconnect();
         }
 
-        return count($routed[$table]) > 1 ? $this->businessSumBy($rows, $keys) : $rows;
+        return count($routed) > 1 ? $this->businessSumBy($rows, $keys) : $rows;
     }
 
     /** Rows with the same $keys added together (numeric columns; the rest from the first row). */

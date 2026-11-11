@@ -6,6 +6,7 @@ use App\Models\Aggregation\HourlyStoreSummary;
 use App\Models\Aggregation\HourlyItemSummary;
 use App\Models\Aggregation\DailyStoreSummary;
 use App\Models\Aggregation\DailyItemSummary;
+use App\Models\Aggregation\DailyOrderExtras;
 use App\Models\Aggregation\WeeklyStoreSummary;
 use App\Models\Aggregation\WeeklyItemSummary;
 use App\Models\Aggregation\MonthlyStoreSummary;
@@ -16,6 +17,7 @@ use App\Models\Aggregation\YearlyStoreSummary;
 use App\Models\Aggregation\YearlyItemSummary;
 use App\Services\Database\DatabaseRouter;
 use App\Support\FiscalCalendar;
+use App\Support\OrderBuckets;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
@@ -157,6 +159,9 @@ class AggregationService
 
         return $write['written'];
     }
+
+    /** Stores per batch in the summary rebuild: bounds memory, never what is built. */
+    private const STORES_PER_BATCH = 10;
 
     private function stageResult(
         string $stage,
@@ -364,6 +369,19 @@ class AggregationService
                     'exception' => $e->getMessage(),
                 ]);
             }
+        }
+
+        // The day's order-level figures for every store at once.
+        try {
+            $rowsWritten += $this->aggregateDailyOrderExtras($date);
+        } catch (\Throwable $e) {
+            $failedStores++;
+
+            Log::error('Daily order extras failed', [
+                'rebuild_id' => $rebuildId,
+                'business_date' => $dateStr,
+                'exception' => $e->getMessage(),
+            ]);
         }
 
         $status = $failedStores > 0
@@ -923,6 +941,112 @@ class AggregationService
     // DAILY AGGREGATION FROM HOURLY
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * The day's order-level figures for every store (daily_order_extras):
+     * channel customers and the website/mobile split, special-items HnR and
+     * upselling — a few queries over that one day's raw orders, grouped by
+     * store in SQL, so reports only sum daily rows.
+     */
+    private function aggregateDailyOrderExtras(Carbon $date): int
+    {
+        $orders = fn (): Builder => $this->routedSource('detail_orders', $date, $date);
+        $lines = fn (): Builder => $this->routedSource('order_line', $date, $date);
+        $inStoreLines = fn (): Builder => $lines()
+            ->whereIn('order_placed_method', OrderBuckets::IN_STORE['placed'])
+            ->whereIn('order_fulfilled_method', OrderBuckets::IN_STORE['fulfilled']);
+        // Orders of the day that have a matching line: (store, order id) pairs.
+        $withLine = fn (Builder $query, Builder $lineOrders): Builder => $query->joinSub(
+            $lineOrders->whereNotNull('order_id')->selectRaw('franchise_store as line_store, order_id as line_order')->distinct(),
+            'lo',
+            fn ($join) => $join->on('lo.line_store', '=', "{$query->from}.franchise_store")->on('lo.line_order', '=', "{$query->from}.order_id"),
+        );
+        $inStore = "('" . implode("','", OrderBuckets::IN_STORE_FULFILLED) . "')";
+
+        $rows = [];
+        $add = function ($result) use (&$rows): void {
+            foreach ($result as $row) {
+                $store = (string) $row->franchise_store;
+                foreach ((array) $row as $key => $value) {
+                    if ($key !== 'franchise_store') {
+                        $rows[$store][$key] = $value ?? 0;
+                    }
+                }
+            }
+        };
+
+        $add($orders()->selectRaw("
+            franchise_store,
+            COALESCE(SUM(customer_count), 0) as customers_total,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Phone' THEN customer_count END), 0) as customers_phone,
+            COALESCE(SUM(CASE WHEN order_placed_method IN ('SoundHoundAgent', 'CallCenterAgent') THEN customer_count END), 0) as customers_call_center,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Drive Thru' THEN customer_count END), 0) as customers_drive_thru,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'DoorDash' THEN customer_count END), 0) as customers_doordash,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'UberEats' THEN customer_count END), 0) as customers_ubereats,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Grubhub' THEN customer_count END), 0) as customers_grubhub,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN {$inStore} THEN royalty_obligation END), 0) as website_in_store,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation END), 0) as website_delivery,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method IN {$inStore} THEN royalty_obligation END), 0) as mobile_in_store,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method = 'Delivery' THEN royalty_obligation END), 0) as mobile_delivery,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method IN {$inStore} THEN customer_count END), 0) as website_in_store_customers,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Website' AND order_fulfilled_method = 'Delivery' THEN customer_count END), 0) as website_delivery_customers,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method IN {$inStore} THEN customer_count END), 0) as mobile_in_store_customers,
+            COALESCE(SUM(CASE WHEN order_placed_method = 'Mobile' AND order_fulfilled_method = 'Delivery' THEN customer_count END), 0) as mobile_delivery_customers
+        ")->groupBy('franchise_store')->get());
+
+        // HnR orders that include a special item.
+        $special = $orders();
+        $add($withLine($special, $lines()->whereIn('item_id', OrderBuckets::IMPORTANT_ITEMS_HNR_ITEM_IDS))
+            ->where("{$special->from}.hnrOrder", 'Yes')
+            ->selectRaw("{$special->from}.franchise_store as franchise_store, COUNT(*) as special_hnr_transactions,"
+                . " COALESCE(SUM(CASE WHEN {$special->from}.broken_promise = 'Yes' THEN 1 ELSE 0 END), 0) as special_hnr_broken_promises")
+            ->groupBy("{$special->from}.franchise_store")
+            ->get());
+
+        // In-store lines on orders that have a pizza line: units sold with a pizza.
+        $soldWith = $inStoreLines();
+        $t = $soldWith->from;
+        $add($withLine($soldWith, $inStoreLines()->where('is_pizza', 1))
+            ->selectRaw("
+                {$t}.franchise_store as franchise_store,
+                COALESCE(SUM(CASE WHEN {$t}.item_id = '103001' THEN {$t}.quantity END), 0) as upsell_crazy_bread,
+                COALESCE(SUM(CASE WHEN {$t}.item_id IN ('101288', '101289') THEN {$t}.quantity END), 0) as upsell_cookies,
+                COALESCE(SUM(CASE WHEN {$t}.item_id = '103002' THEN {$t}.quantity END), 0) as upsell_sauce,
+                COALESCE(SUM(CASE WHEN {$t}.is_wings = 1 THEN {$t}.quantity END), 0) as upsell_wings,
+                COALESCE(SUM(CASE WHEN {$t}.is_beverages = 1 THEN {$t}.quantity END), 0) as upsell_beverages,
+                COALESCE(SUM(CASE WHEN {$t}.is_crazy_puffs = 1 THEN {$t}.quantity END), 0) as upsell_crazy_puffs,
+                COALESCE(SUM(CASE WHEN {$t}.item_id = '204100' THEN {$t}.quantity END), 0) as upsell_bev_20oz,
+                COALESCE(SUM(CASE WHEN {$t}.item_id = '204200' THEN {$t}.quantity END), 0) as upsell_bev_2l,
+                COALESCE(SUM(CASE WHEN {$t}.item_id IN ('203003', '103003') THEN {$t}.quantity END), 0) as upsell_italian_cheese_bread
+            ")
+            ->groupBy("{$t}.franchise_store")
+            ->get());
+
+        [$cheeseId, $pepperoniId] = OrderBuckets::UPSELL_ITEM_IDS;
+        $add($inStoreLines()->selectRaw("
+            franchise_store,
+            COALESCE(SUM(CASE WHEN is_pizza = 1 THEN quantity END), 0) as upsell_pizza_base,
+            COALESCE(SUM(CASE WHEN item_id = '{$cheeseId}' THEN quantity END), 0) as upsell_emb_cheese,
+            COALESCE(SUM(CASE WHEN item_id = '{$pepperoniId}' THEN quantity END), 0) as upsell_emb_pepperoni
+        ")->groupBy('franchise_store')->get());
+
+        // Replace the day: drop its rows, then write every store's in bulk.
+        DailyOrderExtras::query()->where('business_date', $date->toDateString())->delete();
+        $write = $this->upsertRows(
+            DailyOrderExtras::class,
+            array_map(
+                fn (string $store, array $values): array => ['franchise_store' => $store, 'business_date' => $date->toDateString()] + $values,
+                array_keys($rows),
+                $rows,
+            ),
+            ['franchise_store', 'business_date'],
+        );
+        if (!empty($write['failed'])) {
+            throw new \RuntimeException(sprintf('%d order-extras rows failed to write: %s', count($write['failed']), $write['failed'][0]['error']));
+        }
+
+        return $write['written'];
+    }
+
     private function aggregateDailyFromHourly(string $store, Carbon $date): int
     {
         $dateStr = $date->toDateString();
@@ -1111,7 +1235,8 @@ class AggregationService
                 'operational_days' => $days,
                 'operational_months' => $periods,
             ],
-            'itemExtra' => [],
+            // The quarterly item table keeps the quarter's dates too.
+            'itemExtra' => ['quarter_start_date' => $from->toDateString(), 'quarter_end_date' => $to->toDateString()],
             'perDay' => false,
             'prior' => [$prior, 'sales_vs_prior_quarter', 'sales_growth_percent'],
             'priorYear' => [['year_num' => $year - 1, 'quarter_num' => $quarter], 'sales_vs_same_quarter_prior_year', 'yoy_growth_percent'],
@@ -1155,6 +1280,7 @@ class AggregationService
 
         foreach ($buckets as $bucket) {
             $days = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
+            $this->clearBucket($bucket, $days);
             // Days and periods with sales per store (index-only counts over daily).
             $counts = DailyStoreSummary::whereBetween('business_date', $days)
                 ->selectRaw('franchise_store, COUNT(*) as days, COUNT(DISTINCT ' . $this->periodSql($bucket['from']) . ') as periods')
@@ -1167,15 +1293,14 @@ class AggregationService
                 : WeeklyStoreSummary::whereBetween('week_start_date', $days)->count();
             $storesFound += $counts->count();
 
-            foreach ($counts as $store => $count) {
+            foreach (array_chunk($counts->keys()->all(), self::STORES_PER_BATCH) as $batch) {
                 try {
-                    $rowsWritten += $this->aggregateBucketStore((string) $store, $bucket, (int) $count->days, (int) $count->periods);
-                    $rowsWritten += $this->aggregateBucketItems((string) $store, $bucket);
+                    $rowsWritten += $this->buildBucketBatch($batch, $bucket, $counts);
                 } catch (\Throwable $e) {
-                    $failedStores++;
+                    $failedStores += count($batch);
 
-                    Log::error("{$stage} aggregation failed for store", [
-                        'store' => (string) $store,
+                    Log::error("{$stage} aggregation failed for stores", [
+                        'stores' => $batch,
                         'from' => $days[0],
                         'to' => $days[1],
                         'error' => $e->getMessage(),
@@ -1205,61 +1330,99 @@ class AggregationService
     }
 
     /**
-     * One store's row for a bucket — a week summed from its daily rows, a
-     * period/quarter/year from its weekly rows — plus the prior-bucket
-     * comparisons.
+     * Drops the bucket's rows before it is rebuilt, so nothing stale survives:
+     * a store with no days in it any more, or (weeks) the same week saved
+     * under another label by older code.
      */
-    private function aggregateBucketStore(string $store, array $bucket, int $days, int $periods): int
+    private function clearBucket(array $bucket, array $days): void
     {
-        $range = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
-        $rows = $bucket['source'] === 'daily'
-            ? DailyStoreSummary::where('franchise_store', $store)->whereBetween('business_date', $range)->get()
-            : WeeklyStoreSummary::where('franchise_store', $store)->whereBetween('week_start_date', $range)->get();
-
-        if ($rows->isEmpty()) {
-            return 0;
-        }
-
-        $key = ['franchise_store' => $store] + $bucket['key'];
-        $summary = $this->sumStorePeriod($rows, $key + ($bucket['storeExtra'])($days, $periods));
-
-        if ($bucket['perDay'] && $days > 0) {
-            $summary['avg_daily_sales'] = round($summary['royalty_obligation'] / $days, 2);
-            $summary['avg_daily_orders'] = round($summary['total_orders'] / $days, 2);
-        }
-
-        foreach (array_filter([$bucket['prior'], $bucket['priorYear']]) as [$priorKey, $diffField, $growthField]) {
-            $prior = ($bucket['model'])::where(['franchise_store' => $store] + $priorKey)->first();
-            if ($prior) {
-                $priorSales = (float) ($prior->royalty_obligation ?? 0);
-                $summary[$diffField] = round($summary['royalty_obligation'] - $priorSales, 2);
-                $summary[$growthField] = $priorSales > 0
-                    ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
-                    : 0;
+        foreach ([$bucket['model'], $bucket['itemModel']] as $model) {
+            $model::query()->where($bucket['key'])->delete();
+            if ($bucket['source'] === 'daily') {
+                $model::query()->whereBetween('week_start_date', $days)->delete();
             }
         }
-
-        $this->replaceRow($bucket['model'], $key, $summary);
-
-        return 1;
     }
 
     /**
-     * One store's item rows for a bucket — a week from daily items, the rest
-     * from weekly items. Price = gross ÷ quantity and quantity per day sold =
-     * quantity ÷ days sold, never an average of averages.
+     * A batch of stores' rows for one bucket: their source rows read in one
+     * query (a week from daily rows, a period/quarter/year from weekly rows —
+     * at most ~53 rows a store, as plain rows), summed per store, with the
+     * prior-bucket comparisons read in one query each; item rows summed in
+     * SQL; everything written in bulk. Returns the rows written.
+     *
+     * @param  list<string>  $batch
      */
-    private function aggregateBucketItems(string $store, array $bucket): int
+    private function buildBucketBatch(array $batch, array $bucket, Collection $counts): int
     {
         $range = [$bucket['from']->toDateString(), $bucket['to']->toDateString()];
+        $source = $bucket['source'] === 'daily'
+            ? DailyStoreSummary::query()->toBase()->whereIn('franchise_store', $batch)->whereBetween('business_date', $range)->get()
+            : WeeklyStoreSummary::query()->toBase()->whereIn('franchise_store', $batch)->whereBetween('week_start_date', $range)->get();
+
+        $comparisons = [];
+        foreach (array_filter([$bucket['prior'], $bucket['priorYear']]) as [$priorKey, $diffField, $growthField]) {
+            $comparisons[] = [
+                ($bucket['model'])::query()->toBase()->whereIn('franchise_store', $batch)->where($priorKey)
+                    ->get(['franchise_store', 'royalty_obligation'])->keyBy('franchise_store'),
+                $diffField,
+                $growthField,
+            ];
+        }
+
+        $storeRows = [];
+        foreach ($source->groupBy('franchise_store') as $store => $records) {
+            $count = $counts[$store];
+            $summary = $this->sumStorePeriod(
+                $records,
+                ['franchise_store' => (string) $store] + $bucket['key'] + ($bucket['storeExtra'])((int) $count->days, (int) $count->periods),
+            );
+
+            if ($bucket['perDay'] && (int) $count->days > 0) {
+                $summary['avg_daily_sales'] = round($summary['royalty_obligation'] / (int) $count->days, 2);
+                $summary['avg_daily_orders'] = round($summary['total_orders'] / (int) $count->days, 2);
+            }
+
+            foreach ($comparisons as [$priors, $diffField, $growthField]) {
+                $prior = $priors->get($store);
+                if ($prior) {
+                    $priorSales = (float) ($prior->royalty_obligation ?? 0);
+                    $summary[$diffField] = round($summary['royalty_obligation'] - $priorSales, 2);
+                    $summary[$growthField] = $priorSales > 0
+                        ? round((($summary['royalty_obligation'] - $priorSales) / $priorSales) * 100, 2)
+                        : 0;
+                }
+            }
+
+            $storeRows[] = $summary;
+        }
+
+        $uniqueBy = ['franchise_store', ...array_keys($bucket['key'])];
+        $written = $this->upsertRows($bucket['model'], $storeRows, $uniqueBy);
+        if (!empty($written['failed'])) {
+            throw new \RuntimeException(sprintf('%d store rows failed to write: %s', count($written['failed']), $written['failed'][0]['error']));
+        }
+
+        return $written['written'] + $this->writeItemRows($bucket['itemModel'], $this->bucketItemRows($batch, $bucket, $range), [...$uniqueBy, 'item_id']);
+    }
+
+    /**
+     * The batch's item rows for a bucket, summed in SQL per store and item —
+     * a week from daily items, the rest from weekly items. Price = gross ÷
+     * quantity and quantity per day sold = quantity ÷ days sold, never an
+     * average of averages.
+     */
+    private function bucketItemRows(array $batch, array $bucket, array $range): array
+    {
         $query = $bucket['source'] === 'daily'
-            ? DailyItemSummary::where('franchise_store', $store)->whereBetween('business_date', $range)
+            ? DailyItemSummary::query()->toBase()->whereIn('franchise_store', $batch)->whereBetween('business_date', $range)
                 ->selectRaw('COUNT(*) as days_sold')
-            : WeeklyItemSummary::where('franchise_store', $store)->whereBetween('week_start_date', $range)
+            : WeeklyItemSummary::query()->toBase()->whereIn('franchise_store', $batch)->whereBetween('week_start_date', $range)
                 // A week's days sold = its quantity ÷ its quantity per day sold.
                 ->selectRaw('COALESCE(SUM(quantity_sold / NULLIF(avg_daily_quantity, 0)), 0) as days_sold');
         $items = $query
             ->selectRaw('
+                franchise_store,
                 item_id,
                 menu_item_name,
                 menu_item_account,
@@ -1269,14 +1432,14 @@ class AggregationService
                 SUM(delivery_quantity) as delivery_quantity,
                 SUM(carryout_quantity) as carryout_quantity
             ')
-            ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
+            ->groupBy('franchise_store', 'item_id', 'menu_item_name', 'menu_item_account')
             ->get();
 
         $rows = [];
         foreach ($items as $item) {
             $quantity = (float) $item->quantity_sold;
-            // A later group for the same item_id overwrites an earlier one (one row per item).
-            $rows[(string) $item->item_id] = ['franchise_store' => $store] + $bucket['key'] + [
+            // One row per store and item: a later group for the same item overwrites an earlier one.
+            $rows[$item->franchise_store . '|' . $item->item_id] = ['franchise_store' => (string) $item->franchise_store] + $bucket['key'] + [
                 'item_id' => $item->item_id,
                 'menu_item_name' => $item->menu_item_name,
                 'menu_item_account' => $item->menu_item_account,
@@ -1290,9 +1453,7 @@ class AggregationService
             ] + $bucket['itemExtra'];
         }
 
-        $this->writeItemRows($bucket['itemModel'], array_values($rows), ['franchise_store', ...array_keys($bucket['key']), 'item_id']);
-
-        return $items->count();
+        return array_values($rows);
     }
 
     /**
