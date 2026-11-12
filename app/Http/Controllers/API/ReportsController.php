@@ -3363,7 +3363,7 @@ class ReportsController extends Controller
         ];
     }
 
-    private function hnrTotals(array $totals): array
+    private function hnrTotals(array $totals, int $decimals = 2): array
     {
         $transactions = (int) ($totals['hnr_transactions'] ?? 0);
         $broken = (int) ($totals['hnr_broken_promises'] ?? 0);
@@ -3374,7 +3374,7 @@ class ReportsController extends Controller
             'hnr_broken_promises' => $broken,
             'hnr_promise_met' => $promiseMet,
             'hnr_promise_met_percent' => $transactions > 0
-                ? round(($promiseMet / $transactions) * 100, 2)
+                ? round(($promiseMet / $transactions) * 100, $decimals)
                 : 0.0,
         ];
     }
@@ -3845,13 +3845,13 @@ class ReportsController extends Controller
         return $out;
     }
 
-    private function percentOfSales(float $value, float $sales): float
+    private function percentOfSales(float $value, float $sales, int $decimals = 2): float
     {
         if ($sales <= 0) {
             return 0.0;
         }
 
-        return round(($value / $sales) * 100, 2);
+        return round(($value / $sales) * 100, $decimals);
     }
 
     private function averageWeekToDateTotals(array $totals, int $days): array
