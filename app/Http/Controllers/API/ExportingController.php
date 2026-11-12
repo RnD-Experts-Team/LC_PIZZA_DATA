@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Support\FiscalCalendar;
 use App\Http\Controllers\Controller;
 use App\Services\Database\DatabaseRouter;
 use Carbon\Carbon;
@@ -436,10 +437,10 @@ class ExportingController extends Controller
         // If you want: a simple mapping makes this harder to break later
         switch ($model) {
 
-            // Yearly: if yearly tables represent a year bucket, filter by year_num range.
+            // Yearly: fiscal years (App\Support\FiscalCalendar) touching the range.
             case 'yearly_store_summary':
             case 'yearly_item_summary':
-                return $query->whereBetween('year_num', [$startDate->year, $endDate->year]);
+                return $query->whereBetween('year_num', [FiscalCalendar::yearOf($startDate), FiscalCalendar::yearOf($endDate)]);
 
             // Weekly: use overlap, NOT whereBetween on starts/ends.
             case 'weekly_store_summary':
@@ -451,12 +452,15 @@ class ExportingController extends Controller
             case 'quarterly_item_summary':
                 return $applyOverlap($query, 'quarter_start_date', 'quarter_end_date');
 
-            // Monthly: your schema uses (year_num, month_num).
-            // Filter by a computed numeric key YYYYMM so ranges work across years.
+            // Monthly tables hold fiscal 4-week periods (year_num = fiscal year,
+            // month_num = period 1–13): the periods touching the range, by a
+            // numeric key year*100 + period so ranges work across years.
             case 'monthly_store_summary':
             case 'monthly_item_summary':
-                $startKey = ($startDate->year * 100) + $startDate->month;
-                $endKey = ($endDate->year * 100) + $endDate->month;
+                $first = FiscalCalendar::of($startDate);
+                $last = FiscalCalendar::of($endDate);
+                $startKey = ($first['year'] * 100) + $first['period'];
+                $endKey = ($last['year'] * 100) + $last['period'];
 
                 // This works even when spanning multiple years.
                 return $query->whereRaw('(year_num * 100 + month_num) BETWEEN ? AND ?', [$startKey, $endKey]);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\API;
 
+use App\Support\OrderBuckets;
 use App\Http\Controllers\API\Concerns\BuildsBusinessReports;
 use App\Http\Controllers\Controller;
 use App\Models\Aggregation\HourlyStoreSummary;
@@ -46,11 +47,8 @@ class ReportsController extends Controller
      */
     private const CACHE_TTL = 172800;
 
-    private const UPSELL_ITEM_IDS = ['201128', '201106'];
-    private const UPSELL_ITEM_NAMES = [
-        '201128' => 'EMB Cheese',
-        '201106' => 'EMB Pepperoni',
-    ];
+    private const UPSELL_ITEM_IDS = OrderBuckets::UPSELL_ITEM_IDS;
+    private const UPSELL_ITEM_NAMES = OrderBuckets::UPSELL_ITEM_NAMES;
     /** Points per unit for the weighted upselling score. */
     private const UPSELLING_SCORE_WEIGHTS = [
         'wings' => 2.25,
@@ -68,7 +66,7 @@ class ReportsController extends Controller
         '101466',
         '101465'
     ];
-    private const IMPORTANT_ITEMS_HNR_ITEM_IDS = ['103001', '101001', '103044', '105001', '201048'];
+    private const IMPORTANT_ITEMS_HNR_ITEM_IDS = OrderBuckets::IMPORTANT_ITEMS_HNR_ITEM_IDS;
 
     // private const PORTIONING_INGREDIENT_IDS = [
     //     404, 3813, 1042, '4660/4621', 1103, 1515, '03', '02',
@@ -91,10 +89,7 @@ class ReportsController extends Controller
     // So a business date on/after the cutoff pulls key 28 from entry_date = date+1.
     private const LABOR_YESTERDAY_KEY_ID = 28;
     private const LABOR_YESTERDAY_KEY_CUTOFF = '2026-07-07';
-    private const IN_STORE_BUCKET = [
-        'placed' => ['Register', 'Drive Thru', 'SoundHoundAgent', 'Phone', 'CallCenterAgent'],
-        'fulfilled' => ['Register', 'Drive-Thru'],
-    ];
+    private const IN_STORE_BUCKET = OrderBuckets::IN_STORE;
 
     // -----------------------------------------------------------------
     // Store report (GET /reports/store), ported from LC_Pizza's

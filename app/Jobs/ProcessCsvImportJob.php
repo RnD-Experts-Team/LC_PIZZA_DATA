@@ -7,6 +7,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -16,7 +17,19 @@ class ProcessCsvImportJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public $timeout = 3600; // 1 hour
-    public $tries = 3;
+
+    /**
+     * Real failures are retried at most 3 times; waiting for another import of
+     * the same table (see middleware()) is not a failure, so the job may wait
+     * up to retryUntil() for its turn.
+     */
+    public $maxExceptions = 3;
+
+    /** Seconds before a job that found its table busy tries again. */
+    private const BUSY_RETRY_SECONDS = 15;
+
+    /** How long a job may keep waiting for its turn. */
+    private const MAX_WAIT_HOURS = 12;
 
     protected string $uploadId;
     protected string $csvPath;
@@ -38,12 +51,32 @@ class ProcessCsvImportJob implements ShouldQueue
         $this->totalFiles = $totalFiles;
     }
 
+    /**
+     * Imports of the same table never run side by side. Two files covering the
+     * same store-day, imported at once, would both insert its rows (order
+     * lines have no unique key) — that is how days ended up doubled.
+     */
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping(class_basename($this->processorClass)))
+                ->releaseAfter(self::BUSY_RETRY_SECONDS)
+                ->expireAfter($this->timeout + 60),
+        ];
+    }
+
+    public function retryUntil(): \DateTimeInterface
+    {
+        return now()->addHours(self::MAX_WAIT_HOURS);
+    }
+
     public function handle()
     {
         ini_set('memory_limit', '2G');
         $startTime = microtime(true);
 
         $succeeded = false;
+        $finalAttempt = false;
 
         try {
             if (!file_exists($this->csvPath)) {
@@ -69,6 +102,12 @@ class ProcessCsvImportJob implements ShouldQueue
         } catch (\Exception $e) {
             $this->updateProgress('failed', ['error' => $e->getMessage()]);
 
+            // Waiting turns are releases, not attempts that failed: count only real failures.
+            $errorsKey = "csv_import_errors_{$this->uploadId}_" . md5($this->filename);
+            $errors = Cache::increment($errorsKey);
+            Cache::put($errorsKey, $errors, now()->addHours(self::MAX_WAIT_HOURS));
+            $finalAttempt = $errors >= $this->maxExceptions;
+
             Log::error("Import job failed", [
                 'upload_id' => $this->uploadId,
                 'file' => $this->filename,
@@ -80,9 +119,6 @@ class ProcessCsvImportJob implements ShouldQueue
 
             throw $e;
         } finally {
-            $attempt = method_exists($this, 'attempts') ? $this->attempts() : 1;
-            $finalAttempt = ($attempt >= $this->tries);
-
             if ($succeeded || $finalAttempt) {
                 if (file_exists($this->csvPath)) {
                     @unlink($this->csvPath);

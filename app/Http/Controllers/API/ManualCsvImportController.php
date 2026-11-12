@@ -318,6 +318,13 @@ class ManualCsvImportController extends Controller
             'start_date' => 'required|date',
             'end_date' => 'required|date|after_or_equal:start_date',
             'type' => 'required|in:hourly,daily,weekly,monthly,quarterly,yearly,all',
+            // Only these stages (e.g. weekly,monthly,quarterly,yearly to rebuild the
+            // summaries without re-reading the raw orders); otherwise by `type`.
+            'stages' => 'nullable|array',
+            // extras = only daily_order_extras, without rebuilding the daily rows.
+            'stages.*' => 'in:hourly,daily,extras,weekly,monthly,quarterly,yearly',
+            // Pause between units, to spare the MySQL server every service shares.
+            'pause_ms' => 'nullable|integer|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -345,10 +352,12 @@ class ManualCsvImportController extends Controller
             ], 60 * 60 * 24);
 
             RunAggregationRebuildJob::dispatch(
-                $aggregationId,
-                $request->input('start_date'),
-                $request->input('end_date'),
-                $request->input('type')
+                aggregationId: $aggregationId,
+                startDate: $request->input('start_date'),
+                endDate: $request->input('end_date'),
+                type: $request->input('type'),
+                stages: $request->input('stages') ?: null,
+                pauseMs: (int) $request->input('pause_ms', 250),
             );
 
             return response()->json([

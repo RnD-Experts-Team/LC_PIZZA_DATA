@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Support\FiscalCalendar;
 use App\Services\Aggregation\AggregationService;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -22,6 +23,8 @@ class RunAggregationRebuildJob implements ShouldQueue
     protected array $stageOrder = [
         'hourly' => 1,
         'daily' => 2,
+        // Only daily_order_extras, from the raw orders; daily rows untouched.
+        'extras' => 2,
         'weekly' => 3,
         'monthly' => 4,
         'quarterly' => 5,
@@ -33,7 +36,10 @@ class RunAggregationRebuildJob implements ShouldQueue
         protected string $startDate,
         protected string $endDate,
         protected string $type = 'all',
-        protected ?array $stages = null
+        protected ?array $stages = null,
+        // A pause between units so a long rebuild never runs flat out against
+        // the MySQL server every service shares.
+        protected int $pauseMs = 250
     ) {
     }
 
@@ -81,6 +87,10 @@ class RunAggregationRebuildJob implements ShouldQueue
             ]);
 
             foreach ($units as $unit) {
+                if ($processed > 0 && $this->pauseMs > 0) {
+                    usleep($this->pauseMs * 1000);
+                }
+
                 $this->updateProgress('processing', [
                     'total' => count($units),
                     'processed' => $processed,
@@ -257,6 +267,7 @@ class RunAggregationRebuildJob implements ShouldQueue
             $units = array_merge($units, match ($stage) {
                 'hourly' => $this->buildDailyUnits($start, $end, 'hourly'),
                 'daily' => $this->buildDailyUnits($start, $end, 'daily'),
+                'extras' => $this->buildDailyUnits($start, $end, 'extras'),
                 'weekly' => $this->buildWeeklyUnits($start, $end),
                 'monthly' => $this->buildMonthlyUnits($start, $end),
                 'quarterly' => $this->buildQuarterlyUnits($start, $end),
@@ -292,8 +303,7 @@ class RunAggregationRebuildJob implements ShouldQueue
 
         $current = $start->copy();
         while ($current <= $end) {
-            $weekStart = $current->copy()->startOfWeek(Carbon::TUESDAY);
-            $weekEnd = $current->copy()->endOfWeek(Carbon::MONDAY);
+            [$weekStart, $weekEnd] = FiscalCalendar::weekRange($current);
             $key = $weekStart->toDateString() . '_' . $weekEnd->toDateString();
 
             if (!isset($seen[$key])) {
@@ -312,53 +322,54 @@ class RunAggregationRebuildJob implements ShouldQueue
         return $units;
     }
 
+    /** Fiscal 4-week periods touching the range (kept in the "monthly" tables; `month` = period 1–13). */
     protected function buildMonthlyUnits(Carbon $start, Carbon $end): array
     {
         $units = [];
-        $cursor = $start->copy()->startOfMonth();
-        $last = $end->copy()->startOfMonth();
+        $at = FiscalCalendar::of($start);
+        [$from] = FiscalCalendar::periodRange($at['year'], $at['period']);
 
-        while ($cursor <= $last) {
+        while ($from->lte($end)) {
+            $at = FiscalCalendar::of($from);
             $units[] = [
                 'stage' => 'monthly',
-                'year' => (int) $cursor->year,
-                'month' => (int) $cursor->month,
-                'label' => 'monthly:' . $cursor->format('Y-m'),
+                'year' => $at['year'],
+                'month' => $at['period'],
+                'label' => "monthly:{$at['year']}-P{$at['period']}",
             ];
-
-            $cursor->addMonth();
+            $from = FiscalCalendar::periodRange($at['year'], $at['period'])[1]->addDay();
         }
 
         return $units;
     }
 
+    /** Fiscal quarters (3-3-3-4 periods) touching the range. */
     protected function buildQuarterlyUnits(Carbon $start, Carbon $end): array
     {
         $units = [];
-        $cursor = $start->copy()->startOfQuarter();
-        $last = $end->copy()->startOfQuarter();
+        $at = FiscalCalendar::of($start);
+        [$from] = FiscalCalendar::quarterRange($at['year'], $at['quarter']);
 
-        while ($cursor <= $last) {
-            $quarter = (int) ceil($cursor->month / 3);
-
+        while ($from->lte($end)) {
+            $at = FiscalCalendar::of($from);
             $units[] = [
                 'stage' => 'quarterly',
-                'year' => (int) $cursor->year,
-                'quarter' => $quarter,
-                'label' => 'quarterly:' . $cursor->year . '-Q' . $quarter,
+                'year' => $at['year'],
+                'quarter' => $at['quarter'],
+                'label' => "quarterly:{$at['year']}-Q{$at['quarter']}",
             ];
-
-            $cursor->addQuarter();
+            $from = FiscalCalendar::quarterRange($at['year'], $at['quarter'])[1]->addDay();
         }
 
         return $units;
     }
 
+    /** Fiscal years touching the range. */
     protected function buildYearlyUnits(Carbon $start, Carbon $end): array
     {
         $units = [];
 
-        for ($year = (int) $start->year; $year <= (int) $end->year; $year++) {
+        for ($year = FiscalCalendar::yearOf($start); $year <= FiscalCalendar::yearOf($end); $year++) {
             $units[] = [
                 'stage' => 'yearly',
                 'year' => $year,
@@ -374,6 +385,7 @@ class RunAggregationRebuildJob implements ShouldQueue
         return match ($unit['stage']) {
             'hourly' => $service->updateHourlySummaries(Carbon::parse($unit['date']), $this->aggregationId),
             'daily' => $service->updateDailySummaries(Carbon::parse($unit['date']), $this->aggregationId),
+            'extras' => $service->updateDailyOrderExtras(Carbon::parse($unit['date'])),
             'weekly' => $service->updateWeeklySummariesRange(
                 Carbon::parse($unit['start_date']),
                 Carbon::parse($unit['end_date'])
@@ -394,16 +406,16 @@ class RunAggregationRebuildJob implements ShouldQueue
     protected function unitDateForProgress(array $unit): ?string
     {
         return match ($unit['stage']) {
-            'hourly', 'daily' => $unit['date'] ?? null,
+            'hourly', 'daily', 'extras' => $unit['date'] ?? null,
             'weekly' => $unit['start_date'] ?? null,
             'monthly' => isset($unit['year'], $unit['month'])
-            ? Carbon::create($unit['year'], $unit['month'], 1)->toDateString()
+            ? FiscalCalendar::periodRange($unit['year'], $unit['month'])[0]->toDateString()
             : null,
             'quarterly' => isset($unit['year'], $unit['quarter'])
-            ? Carbon::create($unit['year'], (($unit['quarter'] - 1) * 3) + 1, 1)->toDateString()
+            ? FiscalCalendar::quarterRange($unit['year'], $unit['quarter'])[0]->toDateString()
             : null,
             'yearly' => isset($unit['year'])
-            ? Carbon::create($unit['year'], 1, 1)->toDateString()
+            ? FiscalCalendar::yearStart($unit['year'])->toDateString()
             : null,
             default => null,
         };
