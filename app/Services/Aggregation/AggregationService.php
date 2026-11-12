@@ -1045,12 +1045,18 @@ class AggregationService
             COALESCE(SUM(CASE WHEN item_id = '{$pepperoniId}' THEN quantity END), 0) as upsell_emb_pepperoni
         ")->groupBy('franchise_store')->get());
 
+        // A store missing from a query (e.g. no special-items HnR orders that day) has 0 there, not NULL.
+        $zeros = array_fill_keys(
+            array_diff((new DailyOrderExtras)->getFillable(), ['franchise_store', 'business_date']),
+            0,
+        );
+
         // Replace the day: drop its rows, then write every store's in bulk.
         DailyOrderExtras::query()->where('business_date', $date->toDateString())->delete();
         $write = $this->upsertRows(
             DailyOrderExtras::class,
             array_map(
-                fn (string $store, array $values): array => ['franchise_store' => $store, 'business_date' => $date->toDateString()] + $values,
+                fn (string $store, array $values): array => ['franchise_store' => $store, 'business_date' => $date->toDateString()] + $values + $zeros,
                 array_keys($rows),
                 $rows,
             ),
