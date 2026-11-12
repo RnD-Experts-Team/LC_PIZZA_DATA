@@ -47,8 +47,13 @@ Schedule::command("import:backfill --start={$sevenDaysAgo} --end={$yesterday}")
 $aggStart = now()->subDays(7)->toDateString();
 $aggEnd = now()->subDay()->toDateString();
 
-// MORNING PASS: do hourly + daily together
-Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --stages=hourly,daily")
+// Every pass rebuilds the last 7 days and then every fiscal week, period, quarter and year they
+// touch (App\Support\FiscalCalendar), in that order, so the summaries always equal the sum of
+// the days — including the current period/quarter/year and any day a late import corrected.
+$aggStages = 'hourly,daily,weekly,monthly,quarterly,yearly';
+
+// MORNING PASS
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --stages={$aggStages}")
     ->dailyAt('10:30')
     ->timezone('America/New_York')
     ->withoutOverlapping()
@@ -57,8 +62,8 @@ Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --sta
     ->appendOutputTo(storage_path('logs/aggregation-daily-morning.log'))
     ->name('aggregation-daily-morning');
 
-// AFTERNOON PASS: do hourly + daily together again
-Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --stages=hourly,daily")
+// AFTERNOON PASS
+Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --stages={$aggStages}")
     ->dailyAt('13:30')
     ->timezone('America/New_York')
     ->withoutOverlapping()
@@ -66,116 +71,6 @@ Schedule::command("aggregation:rebuild --start={$aggStart} --end={$aggEnd} --sta
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/aggregation-daily-afternoon.log'))
     ->name('aggregation-daily-afternoon');
-
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// WEEKLY (EXACT STAGE ONLY)
-// ════════════════════════════════════════════════════════════════════════════════════════════
-
-$weeklyStart = now()->subWeeks(2)->startOfWeek()->toDateString();
-$weeklyEnd = now()->subWeek()->endOfWeek()->toDateString();
-
-// Tuesday
-Schedule::command("aggregation:rebuild --start={$weeklyStart} --end={$weeklyEnd} --stages=weekly")
-    ->tuesdays()
-    ->at('03:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-weekly-primary.log'))
-    ->name('aggregation-weekly-primary');
-
-// Wednesday retry/pass
-Schedule::command("aggregation:rebuild --start={$weeklyStart} --end={$weeklyEnd} --stages=weekly")
-    ->wednesdays()
-    ->at('03:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-weekly-secondary.log'))
-    ->name('aggregation-weekly-secondary');
-
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// MONTHLY (EXACT STAGE ONLY)
-// ════════════════════════════════════════════════════════════════════════════════════════════
-
-$monthlyStart = now()->subMonths(2)->startOfMonth()->toDateString();
-$monthlyEnd = now()->subMonth()->endOfMonth()->toDateString();
-
-Schedule::command("aggregation:rebuild --start={$monthlyStart} --end={$monthlyEnd} --stages=monthly")
-    ->monthlyOn(1, '04:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-monthly-primary.log'))
-    ->name('aggregation-monthly-primary');
-
-Schedule::command("aggregation:rebuild --start={$monthlyStart} --end={$monthlyEnd} --stages=monthly")
-    ->monthlyOn(2, '04:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-monthly-secondary.log'))
-    ->name('aggregation-monthly-secondary');
-
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// QUARTERLY (EXACT STAGE ONLY)
-// ════════════════════════════════════════════════════════════════════════════════════════════
-
-$quarterStart = now()->subQuarters(2)->startOfQuarter()->toDateString();
-$quarterEnd = now()->subQuarter()->endOfQuarter()->toDateString();
-
-// First day
-Schedule::command("aggregation:rebuild --start={$quarterStart} --end={$quarterEnd} --stages=quarterly")
-    ->quarterly()
-    ->at('04:30')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-quarterly-primary.log'))
-    ->name('aggregation-quarterly-primary');
-
-// Second day
-Schedule::command("aggregation:rebuild --start={$quarterStart} --end={$quarterEnd} --stages=quarterly")
-    ->dailyAt('04:30')
-    ->timezone('America/New_York')
-    ->when(fn() => now()->isSameDay(now()->copy()->firstOfQuarter()->addDay()))
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-quarterly-secondary.log'))
-    ->name('aggregation-quarterly-secondary');
-
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// YEARLY (EXACT STAGE ONLY)
-// ════════════════════════════════════════════════════════════════════════════════════════════
-
-$yearlyStart = now()->subYears(2)->startOfYear()->toDateString();
-$yearlyEnd = now()->subYear()->endOfYear()->toDateString();
-
-// Jan 1
-Schedule::command("aggregation:rebuild --start={$yearlyStart} --end={$yearlyEnd} --stages=yearly")
-    ->yearlyOn(1, 1, '05:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-yearly-primary.log'))
-    ->name('aggregation-yearly-primary');
-
-// Jan 2
-Schedule::command("aggregation:rebuild --start={$yearlyStart} --end={$yearlyEnd} --stages=yearly")
-    ->yearlyOn(1, 2, '05:00')
-    ->timezone('America/New_York')
-    ->withoutOverlapping()
-    ->onOneServer()
-    ->runInBackground()
-    ->appendOutputTo(storage_path('logs/aggregation-yearly-secondary.log'))
-    ->name('aggregation-yearly-secondary');
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // PARTITION SCHEDULES

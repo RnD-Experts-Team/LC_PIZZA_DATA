@@ -805,7 +805,13 @@ class AggregationService
             }
         }
 
-        $write = $this->upsertRows(HourlyItemSummary::class, $rows, ['franchise_store', 'business_date', 'hour', 'item_id']);
+        // Replace the store-day: an item (or an item in an hour) that is no longer in the raw lines
+        // must not keep its old row.
+        $write = HourlyItemSummary::query()->getConnection()->transaction(function () use ($store, $dateStr, $rows): array {
+            HourlyItemSummary::query()->where('franchise_store', $store)->where('business_date', $dateStr)->delete();
+
+            return $this->upsertRows(HourlyItemSummary::class, $rows, ['franchise_store', 'business_date', 'hour', 'item_id']);
+        });
 
         if (!empty($write['failed'])) {
             $failedHourSet = [];
@@ -835,29 +841,20 @@ class AggregationService
     }
 
     /**
-     * All item groups for one store/day in a single pass over order_line, grouped by
-     * hour + item_id + menu_item_name + menu_item_account (the same grouping key as before).
+     * All item groups for one store/day in a single pass over order_line, one group per hour and
+     * item_id: an item sold under more than one name (or account) in an hour is summed, not split
+     * into groups that overwrite each other. The name and account shown are the group's MIN().
      *
-     * The filters were previously applied in PHP on the fetched rows (==, !==, empty()), i.e. byte-exact,
-     * so they are expressed with CAST(... AS BINARY) here rather than the collation-insensitive
-     * comparison used by the store-level queries:
-     *   net_sales          rows where empty(modification_reason)      -> NULL, '' or '0'
+     * The filters are byte-exact (CAST ... AS BINARY):
+     *   net_sales          rows where modification_reason is NULL, '' or '0'
      *   delivery_quantity  rows where order_fulfilled_method == 'Delivery'
-     *   carryout_quantity  rows where empty(order_fulfilled_method) || !== 'Delivery'
-     *   modified_quantity  rows where !empty(modified_order_amount)   -> DECIMAL comes back as a string
-     *                      ("0.00" is not empty), so only NULL is empty
+     *   carryout_quantity  rows where order_fulfilled_method is empty or !== 'Delivery'
+     *   modified_quantity  rows where modified_order_amount is not NULL
      *   refunded_quantity  rows where refunded == 'Yes'
      *
-     * The grouping mirrors the old PHP string key "item_id|name|account": byte-exact (CAST ... AS BINARY)
-     * with NULL and '' collapsed together (COALESCE); MIN() just returns the group's single value under
-     * ONLY_FULL_GROUP_BY. Groups come back in first-appearance order (MIN(id)), which is the order the
-     * old code iterated them in, so "last group wins" for a duplicate item_id resolves the same way.
+     * gross_sales is summed as DOUBLE, as the price (gross ÷ quantity) has always been rounded from.
      *
-     * gross_sales is summed as DOUBLE on purpose: the old code summed the fetched strings as PHP floats
-     * and divided that float for avg_item_price, so the same floating-point accumulation is needed for
-     * the same rounding at half-cent boundaries.
-     *
-     * Keyed by hour, ascending; NULL hours are excluded as the old DISTINCT HOUR() pluck excluded them.
+     * Keyed by hour, ascending; lines without a fulfilled time have no hour and are left out.
      */
     private function fetchHourlyItemGroups(string $store, Carbon $date): Collection
     {
@@ -879,12 +876,7 @@ class AggregationService
             ->where('franchise_store', $store)
             ->where('business_date', $date->toDateString())
             ->selectRaw(implode(', ', $select))
-            ->groupByRaw(
-                'HOUR(date_time_fulfilled), '
-                . "COALESCE(CAST(item_id AS BINARY), ''), "
-                . "COALESCE(CAST(menu_item_name AS BINARY), ''), "
-                . "COALESCE(CAST(menu_item_account AS BINARY), '')"
-            )
+            ->groupByRaw("HOUR(date_time_fulfilled), COALESCE(CAST(item_id AS BINARY), '')")
             ->orderBy('hour')
             ->orderByRaw('MIN(id)')
             ->get()
@@ -930,11 +922,10 @@ class AggregationService
                 'refunded_quantity' => (float) $group->refunded_quantity,
             ];
 
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $group->item_id] = $data;
+            $rows[] = $data;
         }
 
-        return [array_values($rows), $groupCount];
+        return [$rows, $groupCount];
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1137,25 +1128,24 @@ class AggregationService
             ->where('business_date', $dateStr)
             ->selectRaw('
                 item_id,
-                menu_item_name,
-                menu_item_account,
+                MIN(menu_item_name) as menu_item_name,
+                MIN(menu_item_account) as menu_item_account,
                 SUM(quantity_sold) as quantity_sold,
                 SUM(gross_sales) as gross_sales,
                 SUM(net_sales) as net_sales,
-                AVG(avg_item_price) as avg_item_price,
                 SUM(delivery_quantity) as delivery_quantity,
                 SUM(carryout_quantity) as carryout_quantity,
                 SUM(modified_quantity) as modified_quantity,
                 SUM(refunded_quantity) as refunded_quantity
             ')
-            ->groupBy('item_id', 'menu_item_name', 'menu_item_account')
+            ->groupBy('item_id')
             ->get();
 
         $rows = [];
 
         foreach ($items as $item) {
-            // Same key replaceRow() used: a later group for the same item_id overwrites an earlier one.
-            $rows[(string) $item->item_id] = [
+            $quantity = (float) $item->quantity_sold;
+            $rows[] = [
                 'franchise_store' => $store,
                 'business_date' => $dateStr,
                 'item_id' => $item->item_id,
@@ -1164,7 +1154,8 @@ class AggregationService
                 'quantity_sold' => $item->quantity_sold,
                 'gross_sales' => round($item->gross_sales, 2),
                 'net_sales' => round($item->net_sales, 2),
-                'avg_item_price' => round($item->avg_item_price, 2),
+                // Price = gross ÷ quantity, never an average of the hours' prices.
+                'avg_item_price' => $quantity > 0 ? round((float) $item->gross_sales / $quantity, 2) : 0,
                 'delivery_quantity' => $item->delivery_quantity,
                 'carryout_quantity' => $item->carryout_quantity,
                 'modified_quantity' => $item->modified_quantity,
@@ -1172,7 +1163,11 @@ class AggregationService
             ];
         }
 
-        $this->writeItemRows(DailyItemSummary::class, array_values($rows), ['franchise_store', 'business_date', 'item_id']);
+        // Replace the store-day, so an item no longer sold that day loses its old row.
+        DailyItemSummary::query()->getConnection()->transaction(function () use ($store, $dateStr, $rows): void {
+            DailyItemSummary::query()->where('franchise_store', $store)->where('business_date', $dateStr)->delete();
+            $this->writeItemRows(DailyItemSummary::class, $rows, ['franchise_store', 'business_date', 'item_id']);
+        });
 
         return $items->count();
     }
