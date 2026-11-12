@@ -62,6 +62,9 @@ trait BuildsBusinessReports
         'promo' => 'businessPromo',
     ];
 
+    /** Business Reports shows every percentage with 3 decimals, so they are sent with 3. */
+    private const BUSINESS_PCT_DECIMALS = 3;
+
     private const BUSINESS_PAST_TTL = 86400;
     private const BUSINESS_LIVE_TTL = 300;
 
@@ -160,8 +163,9 @@ trait BuildsBusinessReports
         $end = CarbonImmutable::parse($input['end_date'])->startOfDay();
         $stores = $this->businessStores($input['stores'], $start, $end);
 
+        // "v2": percentages went from 2 to 3 decimals; older cached answers are not reused.
         $key = sprintf(
-            'business:%s:%s:%s:%s',
+            'business:v2:%s:%s:%s:%s',
             $section,
             md5(implode(',', $stores)),
             $start->toDateString(),
@@ -588,13 +592,13 @@ trait BuildsBusinessReports
             'portal_used_orders' => (int) ($b['portal_used_orders'] ?? 0),
             'portal_on_time_orders' => (int) ($b['portal_on_time_orders'] ?? 0),
             'portal_days' => (int) $portalDays,
-            'put_into_portal_percent' => $eligible > 0 ? round($used / $eligible * 100, 2) : 0.0,
-            'in_portal_on_time_percent' => $used > 0 ? round($onTime / $used * 100, 2) : 0.0,
-            ...$this->hnrTotals(['hnr_transactions' => $transactions, 'hnr_broken_promises' => $broken]),
+            'put_into_portal_percent' => $eligible > 0 ? round($used / $eligible * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
+            'in_portal_on_time_percent' => $used > 0 ? round($onTime / $used * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
+            ...$this->hnrTotals(['hnr_transactions' => $transactions, 'hnr_broken_promises' => $broken], self::BUSINESS_PCT_DECIMALS),
             'blue_line_total' => round($blue, 2),
             'pepsi_total' => round($pepsi, 2),
-            'blue_line_pct' => $sales > 0 ? round($blue / $sales * 100, 2) : 0.0,
-            'pepsi_pct' => $sales > 0 ? round($pepsi / $sales * 100, 2) : 0.0,
+            'blue_line_pct' => $sales > 0 ? round($blue / $sales * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
+            'pepsi_pct' => $sales > 0 ? round($pepsi / $sales * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
             'calls_total' => (int) ($b['calls_total'] ?? 0),
             'calls_missed' => (int) ($b['calls_missed'] ?? 0),
             'calls_store' => (int) ($b['calls_store'] ?? 0),
@@ -761,15 +765,15 @@ trait BuildsBusinessReports
                 'lto_totals' => [
                     'total_sales' => round($sales, 2),
                     'total_quantity' => $qty,
-                    'pct_of_store_sales' => $storeSales > 0 ? round($sales / $storeSales * 100, 2) : 0.0,
-                    'pct_of_store_quantity' => $storeQty > 0 ? round($qty / $storeQty * 100, 2) : 0.0,
+                    'pct_of_store_sales' => $storeSales > 0 ? round($sales / $storeSales * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
+                    'pct_of_store_quantity' => $storeQty > 0 ? round($qty / $storeQty * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
                 ],
                 'items' => array_map(fn (string $id, array $i): array => [
                     'item_id' => $id,
                     'sales' => round($i['sales'], 2),
                     'quantity' => $i['quantity'],
-                    'pct_of_store_sales' => $storeSales > 0 ? round($i['sales'] / $storeSales * 100, 2) : 0.0,
-                    'pct_of_store_quantity' => $storeQty > 0 ? round($i['quantity'] / $storeQty * 100, 2) : 0.0,
+                    'pct_of_store_sales' => $storeSales > 0 ? round($i['sales'] / $storeSales * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
+                    'pct_of_store_quantity' => $storeQty > 0 ? round($i['quantity'] / $storeQty * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
                 ], array_keys($items), $items),
             ];
         };
@@ -860,7 +864,7 @@ trait BuildsBusinessReports
                     'ingredient_id' => $id,
                     'ingredient_description' => $ingredients[$id]['ingredient_description'],
                     'variance_value' => $value,
-                    'percentage_of_theo_usage' => $theo != 0.0 ? round($value / $theo * 100, 2) : 0.0,
+                    'percentage_of_theo_usage' => $theo != 0.0 ? round($value / $theo * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
                 ];
             }
 
@@ -963,7 +967,7 @@ trait BuildsBusinessReports
             ]);
         }
 
-        $hnr = fn (array $b): array => $this->hnrTotals($b);
+        $hnr = fn (array $b): array => $this->hnrTotals($b, self::BUSINESS_PCT_DECIMALS);
         ksort($byStore);
 
         return [
@@ -1063,7 +1067,7 @@ trait BuildsBusinessReports
                     'ubereats_sales' => round($r['ubereats_sales'], 2),
                     'grubhub_sales' => round($r['grubhub_sales'], 2),
                     'lc_sales' => round($r['promo_sales'] - $r['doordash_sales'] - $r['ubereats_sales'] - $r['grubhub_sales'], 2),
-                    'pct_of_store_sales' => $storeSales > 0 ? round($promo / $storeSales * 100, 2) : 0.0,
+                    'pct_of_store_sales' => $storeSales > 0 ? round($promo / $storeSales * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
                 ];
             }
             usort($out, fn (array $a, array $b): int => $b['promo_sales'] <=> $a['promo_sales']);
@@ -1134,7 +1138,7 @@ trait BuildsBusinessReports
         $score = fn (array $b): array => [
             'total' => (int) ($b['total'] ?? 0),
             'passes' => (int) ($b['passes'] ?? 0),
-            'overall_score' => ($b['total'] ?? 0) > 0 ? round($b['passes'] / $b['total'] * 100, 2) : 0.0,
+            'overall_score' => ($b['total'] ?? 0) > 0 ? round($b['passes'] / $b['total'] * 100, self::BUSINESS_PCT_DECIMALS) : 0.0,
         ];
         ksort($cleanByStore);
         ksort($cleanByPlace);
@@ -1490,7 +1494,7 @@ trait BuildsBusinessReports
 
         $out['sales'] = round($sales, 2);
         $out['labor_cost'] = round((float) ($b['labor_cost'] ?? 0), 2);
-        $out['labor_percent'] = $this->percentOfSales((float) ($b['labor_cost'] ?? 0), $sales);
+        $out['labor_percent'] = $this->percentOfSales((float) ($b['labor_cost'] ?? 0), $sales, self::BUSINESS_PCT_DECIMALS);
         $out['deposit'] = round((float) ($b['deposit'] ?? 0), 2);
         $out['deposit_minus_cash_sales'] = round((float) ($b['deposit'] ?? 0) - (float) ($b['cash_sales'] ?? 0), 2);
         $out['waste_normal'] = round((float) ($b['waste_normal'] ?? 0), 2);
@@ -1504,9 +1508,9 @@ trait BuildsBusinessReports
                 $channels += (float) ($b["{$ch}_sales"] ?? 0);
             }
             $out['register_sales'] = round($sales - $channels, 2);
-            $out['delivery_rate'] = $orders > 0 ? round(($b['delivery_orders'] ?? 0) / $orders * 100, 2) : 0.0;
-            $out['digital_penetration'] = ($b['gross_sales'] ?? 0) > 0 ? round(($b['digital_sales'] ?? 0) / $b['gross_sales'] * 100, 2) : 0.0;
-            $out += array_diff_key($this->hnrTotals($b), ['hnr_transactions' => 1, 'hnr_broken_promises' => 1]);
+            $out['delivery_rate'] = $orders > 0 ? round(($b['delivery_orders'] ?? 0) / $orders * 100, self::BUSINESS_PCT_DECIMALS) : 0.0;
+            $out['digital_penetration'] = ($b['gross_sales'] ?? 0) > 0 ? round(($b['digital_sales'] ?? 0) / $b['gross_sales'] * 100, self::BUSINESS_PCT_DECIMALS) : 0.0;
+            $out += array_diff_key($this->hnrTotals($b, self::BUSINESS_PCT_DECIMALS), ['hnr_transactions' => 1, 'hnr_broken_promises' => 1]);
         }
 
         return $out;
@@ -1522,7 +1526,7 @@ trait BuildsBusinessReports
             'customer_count' => (int) ($b['customer_count'] ?? 0),
             'total_orders' => (int) ($b['total_orders'] ?? 0),
             'labor_cost' => round((float) ($b['labor_cost'] ?? 0), 2),
-            'labor_percent' => $this->percentOfSales((float) ($b['labor_cost'] ?? 0), $sales),
+            'labor_percent' => $this->percentOfSales((float) ($b['labor_cost'] ?? 0), $sales, self::BUSINESS_PCT_DECIMALS),
             'store_days' => (int) ($b['store_days'] ?? 0),
         ];
     }
