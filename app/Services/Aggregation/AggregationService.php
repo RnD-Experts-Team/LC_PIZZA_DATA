@@ -467,7 +467,12 @@ class AggregationService
             }
         }
 
-        $write = $this->upsertRows(HourlyStoreSummary::class, $rows, ['franchise_store', 'business_date', 'hour']);
+        // Replace the store-day: an hour whose orders a later import removed must not keep its old row.
+        $write = HourlyStoreSummary::query()->getConnection()->transaction(function () use ($store, $dateStr, $rows): array {
+            HourlyStoreSummary::query()->where('franchise_store', $store)->where('business_date', $dateStr)->delete();
+
+            return $this->upsertRows(HourlyStoreSummary::class, $rows, ['franchise_store', 'business_date', 'hour']);
+        });
 
         foreach ($write['failed'] as $failure) {
             $failedHours++;

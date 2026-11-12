@@ -14,9 +14,14 @@ class DatabaseRouter
     protected const HOT_DATA_DAYS = 90;
     protected const CACHE_TTL = 3600; // 1 hour
 
+    /**
+     * The first business date still in the hot tables. A whole day, like the archive
+     * mover's cut (business_date < this date): with the time of day kept, a range
+     * ending on this very day was sent to the archive only and came back empty.
+     */
     public static function getCutoffDate(): Carbon
     {
-        return Carbon::now()->subDays(self::HOT_DATA_DAYS);
+        return Carbon::now()->subDays(self::HOT_DATA_DAYS)->startOfDay();
     }
 
     protected static function tableExists(string $connection, string $table): bool
